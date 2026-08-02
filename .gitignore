@@ -1,0 +1,56 @@
+# ---- secrets: never commit ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*
+secrets*
+profiles.yml
+!dbt/profiles.example.yml
+
+# ---- data: never commit ----
+data/
+*.csv
+*.json.gz
+*.parquet
+*.zip
+!docs/**/*.json
+
+# ---- python ----
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# ---- dbt ----
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+*.log
+
+# ---- airflow ----
+airflow/logs/
+airflow.db
+standalone_admin_password.txt
+
+# ---- terraform ----
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+
+# ---- models / embeddings ----
+models/
+*.bin
+*.safetensors
+
+# ---- os / editor ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
