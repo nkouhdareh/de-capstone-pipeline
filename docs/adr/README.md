@@ -23,5 +23,8 @@ as heavily as the build itself, so these are graded, not optional.
 | ADR | Decision | Status | Date |
 |---|---|---|---|
 | [000](ADR-000-template.md) | Template | — | — |
+| [001](ADR-001-domain-and-data-source.md) | Domain & data source — openFDA drug safety | Accepted | 2026-08-02 |
+| [002](ADR-002-warehouse-snowflake.md) | Snowflake as the data warehouse | Accepted | 2026-08-02 |
+| [004](ADR-004-dbt-and-spark-transformation.md) | dbt for modelling + PySpark for flattening | Accepted | 2026-08-02 |
 
-*Add a row each time you write one.*
+*Add a row each time you write one. (ADR-003 and 005–009 are reserved in `architecture.md` and will be written as each is locked.)*
