@@ -47,16 +47,17 @@ def get_page(day_str, skip):
     if API_KEY:
         params["api_key"] = API_KEY
 
-    for attempt in range(5):                    # retry on rate-limit / server errors
+    for attempt in range(6):                    # retry on rate-limit / server errors
         r = requests.get(URL, params=params, timeout=30)
         if r.status_code == 404:                # openFDA = "no results for this day"
             return []
         if r.status_code in (429, 500, 502, 503):
-            time.sleep(2 ** attempt)            # wait longer each try
+            time.sleep(min(2 ** attempt, 30))   # wait longer each try (capped at 30s)
             continue
         r.raise_for_status()
         return r.json().get("results", [])
-    return []
+    # all retries failed -> fail LOUDLY, never silently end the day early
+    raise RuntimeError(f"openFDA page failed after retries: {day_str} skip={skip}")
 
 
 def download_events():

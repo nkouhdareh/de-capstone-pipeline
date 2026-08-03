@@ -84,9 +84,39 @@ D:/capstone/data/bronze/drug_event/receivedate=YYYYMMDD/part-<n>.json
 
 **To change what you pull:** edit `START`, `END`, or `TARGET` near the top of the script.
 
-### Backfill a historical period
+### Manual trigger — download drug/label and drug/ndc (bulk files)
+
+**What the scripts do** (`scripts/ingest_drug_label.py`, `scripts/ingest_drug_ndc.py`):
+
+- Both datasets are past the API's 26,000 paging limit, so they use openFDA's **bulk download files** (no API key needed).
+- Each `.json.zip` is downloaded and its records saved as **raw** NDJSON in the bronze layer.
+
+**Run them** (virtual environment activated):
 
 ```bash
+python scripts/ingest_drug_ndc.py
+```
+
+```bash
+python scripts/ingest_drug_label.py
+```
+
+**Where the data is saved:**
+
+```
+D:/capstone/data/bronze/drug_ndc/part-<n>.json
+D:/capstone/data/bronze/drug_label/part-<n>.json
+```
+
+**Note:** label is large (261k full label texts, several GB). For a quick sample, set `MAX_FILES = 1` near the top of `ingest_drug_label.py`.
+
+### Backfill / re-fetch specific days
+
+If a day comes up short (a page failed mid-download), re-fetch just those days with
+`scripts/backfill_days.py` (edit the `DAYS` list at the top; uses your API key):
+
+```bash
+python scripts/backfill_days.py
 ```
 
 ### Verifying a run succeeded
@@ -102,6 +132,22 @@ While running, the script prints one line per 1,000 records, for example:
 - It ends with `DONE. 2,687,675 records saved to ...`.
 - Healthy runtime: roughly 30–60 minutes.
 - Check that `D:/capstone/data/bronze/drug_event/` contains `receivedate=...` folders with `.json` files inside.
+
+### Ingested so far (verified)
+
+Each count was checked against openFDA's own totals.
+
+| Dataset | Records | How verified |
+|---|---|---|
+| `drug_event` (2023–2024) | **2,687,675** | matches openFDA range total exactly |
+| `drug_label` | **261,258** | matches the bulk-file record count |
+| `drug_ndc` | **136,520** | matches the bulk-file record count |
+
+**Count records on disk for any dataset:**
+
+```bash
+find /d/capstone/data/bronze/<dataset> -name "*.json" -exec cat {} + | wc -l
+```
 
 ---
 
@@ -127,6 +173,9 @@ While running, the script prints one line per 1,000 records, for example:
 | Task fails with HTTP 429 | Rate limit exceeded | Wait; backoff handles it automatically | Yes |
 | `venv` ends in `KeyboardInterrupt`, venv half-made | Ctrl+C pressed during setup | `rm -rf .venv`, then `python -m venv .venv` and let it finish | Yes |
 | `bash: ...activate: command not found` | Backslashes used in Git Bash | Use `source .venv/Scripts/activate` (forward slashes) | Yes |
+| Fewer records on disk than openFDA's count | A page request failed and the old script treated the empty reply as "day finished" | Compare per-day API count vs disk, re-fetch the short day(s); script now **raises** on a failed page instead of skipping | Yes |
+| `SSL: CERTIFICATE_VERIFY_FAILED` on a bulk download | `urllib` couldn't verify the certificate (Windows / antivirus scanning HTTPS) | Use `requests` (it ships the certifi CA bundle) — the label/ndc scripts now do | Yes |
+| HTTP 403 on the API | Keyless request hit the low rate limit | Use your API key (`OPENFDA_API_KEY` in `.env`) | Yes |
 
 ---
 
