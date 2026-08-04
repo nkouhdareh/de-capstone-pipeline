@@ -1,0 +1,21 @@
+# Local exploration + data-quality environment: Jupyter + PySpark in one container.
+#   Start:  docker compose up        then open  http://localhost:8888
+#   Stop:   docker compose down
+#
+# Notes:
+# - DATA_DIR is read from .env (e.g. D:/capstone/data). The bronze data is mounted
+#   read-only, so the notebook can never accidentally change it.
+# - On Windows, share the D: drive in Docker Desktop → Settings → Resources → File Sharing.
+
+services:
+  spark-jupyter:
+    image: jupyter/pyspark-notebook:latest
+    container_name: capstone-spark-jupyter
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./notebooks:/home/jovyan/work           # notebooks live in the repo (version-controlled)
+      - ${DATA_DIR}:/home/jovyan/data:ro         # bronze data, READ-ONLY (DATA_DIR from .env)
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+    command: ["start-notebook.sh", "--NotebookApp.token=''", "--NotebookApp.password=''", "--NotebookApp.password_required=False"]

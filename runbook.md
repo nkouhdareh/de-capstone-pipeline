@@ -149,6 +149,41 @@ Each count was checked against openFDA's own totals.
 find /d/capstone/data/bronze/<dataset> -name "*.json" -exec cat {} + | wc -l
 ```
 
+### Explore the data (Spark + Jupyter)
+
+Exploration and the data-quality checks run in **PySpark inside Jupyter**, via Docker
+(`docker-compose.yml`, reusing the week-12 setup). Everything runs **locally** on this
+laptop — nothing is in the cloud.
+
+```bash
+docker compose up
+```
+
+Then open **http://localhost:8888** → `work/01_explore_drug_event.ipynb` → **Run All Cells**.
+First run pulls the image (~2–4 min). On Windows, share the **D:** drive in Docker Desktop →
+Settings → Resources → File Sharing.
+
+**Why Spark, not pandas, to explore this data?**
+
+The bronze `drug_event` data is **~2.69M nested JSON records** (a few GB). On a 16 GB laptop:
+
+- **pandas** loads the whole dataset into RAM at once. At this size it does not fit in 16 GB,
+  so it runs out of memory and crashes — pandas is all-in-memory or nothing.
+- **Spark** processes the data in small **chunks (partitions)**, a few at a time, and **spills
+  the overflow to disk** when memory is tight. It only needs RAM for the chunk it is working on,
+  never the whole dataset — so it can handle data **bigger than memory**. It also spreads the
+  work across all CPU **cores**, so it is faster too.
+
+The point is **not** that "Spark is faster" — on a small sample pandas is actually faster (no
+startup overhead). The point is that **Spark scales to data bigger than memory**: it can process
+the full 2.69M-record dataset on one 16 GB machine, which pandas cannot. pandas stays useful for
+a quick look at a small sample; Spark is the tool for the full dataset (and the Silver-layer
+cleaning).
+
+*On one laptop Spark parallelises across CPU **cores**, not **nodes** — nodes are separate
+machines in a cloud cluster, the same idea at bigger scale. The overall Spark decision is
+recorded in `docs/adr/ADR-004`.*
+
 ---
 
 ## 3. Monitoring
