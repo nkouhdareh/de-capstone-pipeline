@@ -184,6 +184,21 @@ cleaning).
 machines in a cloud cluster, the same idea at bigger scale. The overall Spark decision is
 recorded in `docs/adr/ADR-004`.*
 
+**Speed: cache the raw JSON as Parquet**
+
+Reading the raw **nested JSON** repeatedly is slow — every Spark check re-reads and re-parses
+all 3,043 files (one completeness cell took **over an hour**). Cache it once as **Parquet**
+(binary, schema stored, columnar, compressed), then read that instead:
+
+```python
+df.write.mode('overwrite').parquet('/home/jovyan/dq_cache/drug_event')   # one-time, slow
+df = spark.read.parquet('/home/jovyan/dq_cache/drug_event')              # fast from here on
+```
+
+Reads then drop from **minutes to seconds**. This cache lives inside the container (temporary —
+rebuild with the write line if you `docker compose down`); the permanent Parquet lands in the
+Silver layer. Pattern: **JSON to land, Parquet to work**.
+
 ---
 
 ## 3. Monitoring
@@ -196,6 +211,20 @@ recorded in `docs/adr/ADR-004`.*
 | Rejected rows | | |
 | Runtime | | |
 | Cost per run | | |
+
+### Data quality baseline — bronze `drug_event` (from exploration)
+
+Known-good numbers from exploring the 2,687,675-record bronze. Use these to tell a **real problem
+from a normal, expected gap**. Full detail: `notebooks/01_explore_drug_event.ipynb`.
+
+| Check | Expected / healthy | Note |
+|---|---|---|
+| Duplicate `safetyreportid` | **0** | openFDA returns latest-version only |
+| Key fields null (`safetyreportid`, `receivedate`, `serious`) | ~0% | `serious` ~0.01% |
+| Drug name & reaction present | **100%** | `medicinalproduct`, `reactionmeddrapt` never null/blank |
+| Demographics missing | age ~44%, sex ~17%, country ~11% | **expected** — bucket as `Unknown`, not a bug |
+| Drug-name resolution (`openfda.generic_name`) | ~83% present | Tier-1 source for #5 normalisation |
+| Fan-out per report | ~3.9 drugs, ~3.0 reactions | 10.4M drug rows, 8.0M reaction rows |
 
 ---
 
@@ -211,6 +240,7 @@ recorded in `docs/adr/ADR-004`.*
 | Fewer records on disk than openFDA's count | A page request failed and the old script treated the empty reply as "day finished" | Compare per-day API count vs disk, re-fetch the short day(s); script now **raises** on a failed page instead of skipping | Yes |
 | `SSL: CERTIFICATE_VERIFY_FAILED` on a bulk download | `urllib` couldn't verify the certificate (Windows / antivirus scanning HTTPS) | Use `requests` (it ships the certifi CA bundle) — the label/ndc scripts now do | Yes |
 | HTTP 403 on the API | Keyless request hit the low rate limit | Use your API key (`OPENFDA_API_KEY` in `.env`) | Yes |
+| A Spark cell takes ~1 hour | Re-reading + re-parsing nested JSON on every check (no cache) | Cache once to Parquet (`df.write.parquet(...)`), then read the Parquet — seconds, not minutes | Yes |
 
 ---
 
