@@ -248,7 +248,17 @@ from a normal, expected gap**. Full detail: `notebooks/01_explore_drug_event.ipy
 
 ### A run failed partway through
 
-*Is it safe to simply re-run? What does the checkpoint do?*
+**Ingestion has no auto-checkpoint yet** — it restarts from `START`. To resume an interrupted
+`ingest_drug_event.py`:
+
+1. Note the **last `receivedate=` folder** written (e.g. `20241018`).
+2. **Delete that day's folder** — it may be half-written: `rm -rf .../drug_event/receivedate=20241018`.
+3. Set `START` in the script to that date, save, and re-run — it fills only the remaining days.
+4. Afterwards, set `START` back to the full range.
+
+For **specific short days** (a page failed mid-day), use `scripts/backfill_days.py` instead
+(edit its `DAYS` list) — it re-fetches just those days with your key. Verify with per-day
+API count vs disk.
 
 ### Data looks wrong in the marts
 
@@ -266,4 +276,8 @@ from a normal, expected gap**. Full detail: `notebooks/01_explore_drug_event.ipy
 docker compose down -v
 ```
 
-*Anything cloud-side that must be destroyed to avoid cost.*
+- **`docker compose stop`** — pauses the container and **keeps** the Parquet cache. Use this between sessions.
+- **`docker compose down`** — removes the container; the **Parquet cache is lost** (rebuild it with the write cell). `-v` additionally removes named volumes.
+- **Your data and notebooks are never deleted** by any of these — they live in host folders (bind mounts), not inside Docker.
+
+*Cloud-side to destroy to avoid cost: none yet (everything is local so far).*
