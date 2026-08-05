@@ -199,18 +199,54 @@ Reads then drop from **minutes to seconds**. This cache lives inside the contain
 rebuild with the write line if you `docker compose down`); the permanent Parquet lands in the
 Silver layer. Pattern: **JSON to land, Parquet to work**.
 
+### Build the Silver layer (clean atomic data)
+
+Flattens bronze to the atomic **(case, drug, reaction)** grain and applies the three cleaning
+issues — **#4** dedup, **#5** drug-name normalisation, **#6** validation/quarantine — writing
+permanent Parquet. Notebook: `notebooks/02_build_silver_drug_event.ipynb`.
+
+> **Why this design (and why PySpark, not pandas)?** See `docs/silver_layer_notes.md` — the
+> provenance of each choice plus the tooling trade-off, in defensible form.
+
+**Runs month by month, with all scratch on D:.** The notebook processes one month at a time (no
+whole-dataset shuffle) and keeps **all Spark scratch on D:** — spill via `SPARK_LOCAL_DIRS=/opt/spark-tmp`
+and the Parquet cache under `dq_cache`, both D: mounts. This is deliberate: an earlier single-shot
+version OOM'd the driver mid-write and stranded tens of GB of Spark spill inside the Docker disk on
+**C:**, filling it. Scratch must never land on C: again — see the failure playbook.
+
+```bash
+docker compose up -d
+```
+
+`docker compose up -d` recreates the container to pick up all the writable mounts — `silver/`,
+`quarantine/`, `dq_cache/` and `spark-tmp/` (bronze stays read-only). Then open
+**http://localhost:8888** → `work/02_build_silver_drug_event.ipynb` → **Run All Cells**.
+
+- **First run builds the Parquet cache on D:** from the bronze JSON, month by month (~15 min,
+  one-time). It lives at `D:/capstone/data/dq_cache` (not inside the container), so it survives
+  `docker compose down` and never grows the C: drive. Later runs read it in seconds.
+- **Outputs** (permanent, on the D: drive):
+  - `D:/capstone/data/silver/drug_event/` — clean atomic table, Parquet, partitioned by
+    `receive_year`/`receive_month`.
+  - `D:/capstone/data/quarantine/drug_event/` — rejected drug entries (#6) with a `_reject_reason`.
+- **The notebook reports its own numbers** — rows in/out, duplicates removed, drug resolution rate,
+  quarantine counts — and the final cells verify the grain key is unique and no rejects leaked through.
+
+Bronze is never written: it is reachable only through the read-only mount, while Silver and
+Quarantine are separate writable mounts pointing at sibling folders.
+
 ---
 
 ## 3. Monitoring
 
 | What | Where to look | Healthy range |
 |---|---|---|
-| Run status | | |
-| Rows ingested | | |
-| Duplicates removed | | |
-| Rejected rows | | |
-| Runtime | | |
-| Cost per run | | |
+| Run status | Silver nb runs top-to-bottom; final "verify" cell reads all `True` / `0` | green |
+| Rows ingested | `reports in` (Silver nb) | 2,687,675 reports |
+| Duplicates removed (#4) | `duplicates removed` (Silver nb) | large — ~38% on the sample day (reports repeat a drug across dosage entries → collapsed to one row per case-drug-reaction) |
+| Rejected rows (#6) | `quarantined drug entries` (Silver nb) | ~19 (18 rogue `drugcharacterization` 4/5 + 1 null) |
+| Runtime | wall clock, Run-All | ~20–40 min incl. one-time cache rebuild |
+| Cost per run | local only, no cloud | $0 |
 
 ### Data quality baseline — bronze `drug_event` (from exploration)
 
@@ -225,6 +261,23 @@ from a normal, expected gap**. Full detail: `notebooks/01_explore_drug_event.ipy
 | Demographics missing | age ~44%, sex ~17%, country ~11% | **expected** — bucket as `Unknown`, not a bug |
 | Drug-name resolution (`openfda.generic_name`) | ~83% present | Tier-1 source for #5 normalisation |
 | Fan-out per report | ~3.9 drugs, ~3.0 reactions | 10.4M drug rows, 8.0M reaction rows |
+
+### Data quality baseline — Silver `drug_event` (after the build)
+
+What a healthy Silver run produces. Numbers below the divider are confirmed on the first full
+Run-All; the one-day figures are the smoke test used to validate the transform.
+
+| Check | Expected / healthy | Note |
+|---|---|---|
+| Grain | one row per (case, resolved drug, characterization, reaction) | grain key `report_drug_reaction_key` unique |
+| Silver rows | tens of millions (TR §5.1 est. 10–50M) | after #4 dedup |
+| Duplicates removed (#4) | large fraction of pre-dedup rows | report-level was 0 dup; the dupes live at the atomic grain |
+| Drug resolution rate (#5) | ~80–83% Tier-1 (`generic_name`/`substance_name`) | published every run |
+| Quarantine (#6) | ~19 rows | `drugcharacterization ∉ {1,2,3}` |
+| Null `resolved_drug` / `reaction_pt` | 0 | grain integrity |
+
+*Smoke test (1 day, `receivedate=20240102`): 4,053 reports → 103,502 atomic → 63,928 Silver rows
+(38% deduped), 78.7% resolved, 0 quarantined, grain key unique.*
 
 ---
 
@@ -241,6 +294,11 @@ from a normal, expected gap**. Full detail: `notebooks/01_explore_drug_event.ipy
 | `SSL: CERTIFICATE_VERIFY_FAILED` on a bulk download | `urllib` couldn't verify the certificate (Windows / antivirus scanning HTTPS) | Use `requests` (it ships the certifi CA bundle) — the label/ndc scripts now do | Yes |
 | HTTP 403 on the API | Keyless request hit the low rate limit | Use your API key (`OPENFDA_API_KEY` in `.env`) | Yes |
 | A Spark cell takes ~1 hour | Re-reading + re-parsing nested JSON on every check (no cache) | Cache once to Parquet (`df.write.parquet(...)`), then read the Parquet — seconds, not minutes | Yes |
+| Silver write fails: `Read-only file system` / `Permission denied` on `/home/jovyan/silver` | The `silver`/`quarantine` mounts aren't present — container wasn't recreated after the compose edit | `docker compose up --force-recreate`; confirm the two host dirs (`D:/capstone/data/silver`, `.../quarantine`) exist and the mounts are in `docker-compose.yml` | Yes |
+| Silver run: one reaction-explode task stalls near 100% / executor OOM | Mega-report skew (max 4,113 drugs × 518 reactions on a single report) piled on one task | The notebook repartitions on `(safety_report_id, drug_idx)` before the reaction explode; processing month-by-month also keeps each batch small | Yes |
+| **C: drive fills up; driver dies mid-`.parquet()` write** (`py4j` "Answer from Java side is empty" / "py4j does not exist in the JVM") | Single-shot whole-dataset `dropDuplicates`+`partitionBy` OOM'd the driver, and each crashed run left orphaned Spark spill (`blockmgr-*`, `spark-*`) stacking up inside `docker_data.vhdx` on **C:** — retrying/rebooting made it worse | **Root fix applied:** spill routed to D: (`SPARK_LOCAL_DIRS=/opt/spark-tmp`), cache on D:, notebook runs **month by month** (no giant shuffle). **Never** retry/reboot a crashed run without spill-on-D: + a memory fix first — that is exactly what filled C: | Yes (idempotent) |
+| Silver read: `Cannot reserve additional contiguous bytes in the vectorized reader` / `OutOfMemoryError: Java heap space` | Spark's vectorized Parquet reader batches 4,096 rows of the wide, deeply-nested `patient.drug[]` column at once (× many cores) → heap blows | Disable it: `spark.sql.parquet.enableVectorizedReader=false` (already set in the notebook); row-based reading is far lighter on nested data | Yes |
+| A Silver run crashed and you want to retry | Orphaned Spark spill may remain (now on **D:**, so it cannot fill C:) | Delete everything in `D:/capstone/data/spark-tmp/` (host) or `docker exec capstone-spark-jupyter rm -rf /opt/spark-tmp/*`; check `docker system df`; then re-run — month-by-month writes are idempotent (dynamic partition overwrite) | Yes |
 
 ---
 

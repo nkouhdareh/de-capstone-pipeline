@@ -1,7 +1,7 @@
 # Project Progress & Handoff
 
 *A running snapshot of where the project is, so a fresh session (or a teammate) can pick up fast.*
-**Status as of:** end of data exploration (Week 1).
+**Status as of:** Silver layer coded & smoke-tested — issues #4/#5/#6 (Week 2). Full Run-All pending.
 
 ---
 
@@ -36,6 +36,11 @@ drug-safety analyst, with a dashboard. Health domain. Full business case: `docs/
 - Metadata: `docs/Metadata/` — `metadata.md`, `field_dictionary.md`, `drug_event_schema.md` + openFDA specs
 - **Exploration / data quality**: `notebooks/01_explore_drug_event.ipynb` — all 5 dimensions
 - Week-1 coach answers: `scripts/PoC/week1_coach_answers.md`
+- **Silver layer (PySpark)**: `notebooks/02_build_silver_drug_event.ipynb` — flatten → (case, drug,
+  reaction), cast/decode, **#4** dedup, **#5** tiered normalisation (resolution rate published),
+  **#6** validation/quarantine; writes `silver/` + `quarantine/` Parquet. `docker-compose.yml` gains
+  writable `silver`/`quarantine` mounts (bronze stays read-only). *Smoke-tested on 1 day; full
+  Run-All pending.*
 
 ## Key data-quality findings (these drive the cleaning)
 | Dimension | Result | Cleaning action |
@@ -47,22 +52,46 @@ drug-safety analyst, with a dashboard. Health domain. Full business case: `docs/
 | Fan-out / skew | ~3.9 drugs & ~3.0 reactions per report; **max 4,113 drugs / 518 reactions** | Silver: handle mega-report skew when flattening |
 | Timeliness | exact 2023–2024 window; batch/quarterly source | note only |
 
-## NEXT: build the Silver layer (issues #4 / #5 / #6) — in PySpark
-1. **Flatten** `patient.drug[]` × `patient.reaction[]` → atomic grain **(report, drug, reaction)**. Watch mega-report skew.
-2. **Cast** strings → types (dates from `YYYYMMDD`; decode coded fields).
-3. **#4 dedup** — report-level already clean; check/handle atomic-grain duplicates.
-4. **#5 normalisation** — Tier-1 `openfda.generic_name`/`substance_name` (~83%); Tier-2 clean or flag the rest; **publish the resolution rate**.
-5. **#6 validation + quarantine** — enforce `drugcharacterization ∈ {1,2,3}` (18 rogue → quarantine), demographics → `Unknown`; route rejects to a `_quarantine` table.
-6. **Write clean silver as Parquet** (permanent, in the data dir — will need the Docker data mount made writable).
+## Silver layer — built (#4 / #5 / #6) — PySpark
+`notebooks/02_build_silver_drug_event.ipynb`. Grain: one row per **(case, resolved drug,
+characterization, reaction)**; columns shaped to feed `fct_report_drug_reaction` (TR §5.2).
+
+- **Flatten** `patient.drug[]` × `patient.reaction[]`; mega-report skew handled — slim the drug
+  struct *before* exploding, then repartition on `(safety_report_id, drug_idx)` before the reaction
+  explode so one 4,113-drug report can't pile onto a single task.
+- **Cast/decode** — dates from `YYYYMMDD`; coded fields decoded; demographics → `Unknown`; age
+  **banded, never exact** (TR §9); seriousness → booleans (BR-12).
+- **#4 dedup** — at the atomic grain. Report-level was 0 dup, but ~**38%** of atomic rows dedup on
+  the sample day: reports repeat the same drug across dosage entries → collapsed to one row per
+  case-drug-reaction (correct case counts). *A real finding the report-level check couldn't see.*
+- **#5 normalisation** — Tier-1 `openfda.generic_name` → `substance_name`; Tier-2 cleaned raw
+  (flagged `unresolved_raw`). **Resolution rate published** (~79% sample day; ~83% expected full).
+- **#6 validation/quarantine** — `drugcharacterization ∈ {1,2,3}` enforced; rejects (~19: codes 4/5
+  + null) routed to `quarantine/drug_event` with a reason, never dropped.
+- **Output** — `D:/capstone/data/silver/drug_event/` (Parquet, partitioned by `receive_year`/`month`)
+  + `D:/capstone/data/quarantine/drug_event/`. Run steps + baselines in `runbook.md` §2–§3.
+
+*Smoke-tested end-to-end on 1 day (`receivedate=20240102`). Full Run-All still to do — the real
+resolution / dedup / quarantine counts get filled into `runbook.md` §3 from that run.*
+
+## NEXT: load Silver → Snowflake, then model in dbt
+1. Land the Silver Parquet in Snowflake `RAW` (external stage — TR-09/10).
+2. dbt: `stg_` (rename/cast, 1:1) → `int_` (modelling on the clean atomic Silver) → `dim_`/`fct_`
+   marts: `fct_report_drug_reaction`, `dim_drug`, `dim_reaction`, `dim_reporter`, `dim_date` (TR §5).
+3. `sem_signal_metrics` — PRR / ROR / χ² + signal flag, formulas in exactly one model (TR §5.3, TR-24).
+4. dbt tests (**#7**) — key uniqueness/not-null, accepted-values on codes, the PRR/ROR worked-example
+   test (TR-33…TR-38).
+5. Consider **ADR-005** (drug-name resolution tiers) — referenced by TR §12 / TR-19, not yet written.
 
 ## How to run (quick)
 - **Explore:** `docker compose up` → http://localhost:8888 → `work/01_explore_drug_event.ipynb`. First cache JSON→Parquet (`/home/jovyan/dq_cache`) for speed. Full detail + failure fixes in `runbook.md`.
+- **Silver:** `docker compose up` (recreates for the new writable mounts) → `work/02_build_silver_drug_event.ipynb` → Run All. Writes `silver/` + `quarantine/` Parquet. Detail in `runbook.md` §2.
 - **Ingestion:** see `runbook.md` §2.
 
 ## Board issues (github.com/nkouhdareh/de-capstone-pipeline)
 - **Done:** #1 repo/env, #2 first API call, #3 bronze ingestion, #8 ADR-001
-- **Next (Silver):** #4 dedup, #5 normalisation, #6 validation/quarantine
-- **Later:** #7 dbt tests on staging
+- **Code complete (Silver, full run pending):** #4 dedup, #5 normalisation, #6 validation/quarantine
+- **Next:** load Silver → Snowflake + dbt marts; #7 dbt tests on staging
 
 ## Rules / reminders
 - **Data never in git** (lives on D: drive). Secrets in `.env` only.

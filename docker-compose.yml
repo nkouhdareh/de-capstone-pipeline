@@ -5,6 +5,12 @@
 # Notes:
 # - DATA_DIR is read from .env (e.g. D:/capstone/data). The bronze data is mounted
 #   read-only, so the notebook can never accidentally change it.
+# - Silver output is writable, but via SEPARATE mounts pointing at sibling dirs
+#   (silver/, quarantine/) — bronze/ is only reachable through the read-only mount,
+#   so it stays immutable. The Silver notebook writes to /home/jovyan/silver.
+# - CRITICAL: Spark spill (SPARK_LOCAL_DIRS) and the JSON->Parquet cache (dq_cache) are mounted
+#   to D: as well, so Spark scratch NEVER lands on C:. Orphaned spill on C: is what filled the
+#   C: drive before — keep all scratch on D:.
 # - On Windows, share the D: drive in Docker Desktop → Settings → Resources → File Sharing.
 
 services:
@@ -14,8 +20,13 @@ services:
     ports:
       - "8888:8888"
     volumes:
-      - ./notebooks:/home/jovyan/work           # notebooks live in the repo (version-controlled)
-      - ${DATA_DIR}:/home/jovyan/data:ro         # bronze data, READ-ONLY (DATA_DIR from .env)
+      - ./notebooks:/home/jovyan/work                    # notebooks live in the repo (version-controlled)
+      - ${DATA_DIR}:/home/jovyan/data:ro                 # bronze data, READ-ONLY (DATA_DIR from .env)
+      - ${DATA_DIR}/silver:/home/jovyan/silver           # Silver Parquet output, writable
+      - ${DATA_DIR}/quarantine:/home/jovyan/quarantine   # rejected rows (#6), writable
+      - ${DATA_DIR}/dq_cache:/home/jovyan/dq_cache       # JSON->Parquet cache on D: (was piling up on C:)
+      - ${DATA_DIR}/spark-tmp:/opt/spark-tmp             # Spark spill/scratch on D: — must NEVER touch C:
     environment:
       - JUPYTER_ENABLE_LAB=yes
+      - SPARK_LOCAL_DIRS=/opt/spark-tmp                  # route ALL Spark shuffle/spill to the D: mount
     command: ["start-notebook.sh", "--NotebookApp.token=''", "--NotebookApp.password=''", "--NotebookApp.password_required=False"]
