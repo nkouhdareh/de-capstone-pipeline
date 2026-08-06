@@ -243,9 +243,9 @@ Quarantine are separate writable mounts pointing at sibling folders.
 |---|---|---|
 | Run status | Silver nb runs top-to-bottom; final "verify" cell reads all `True` / `0` | green |
 | Rows ingested | `reports in` (Silver nb) | 2,687,675 reports |
-| Duplicates removed (#4) | `duplicates removed` (Silver nb) | large — ~38% on the sample day (reports repeat a drug across dosage entries → collapsed to one row per case-drug-reaction) |
-| Rejected rows (#6) | `quarantined drug entries` (Silver nb) | ~19 (18 rogue `drugcharacterization` 4/5 + 1 null) |
-| Runtime | wall clock, Run-All | ~20–40 min incl. one-time cache rebuild |
+| Duplicates removed (#4) | Silver-nb Results cell | **~52%** (verified 48.3M of 93.4M; a report repeats a drug across dosage lines → collapsed to one row per case-drug-reaction) |
+| Rejected rows (#6) | Silver-nb Results cell | **~431,760** (431,741 `reaction_pt_null` from 3 mega-reports + 18 rogue `drugcharacterization` + 1 null) |
+| Runtime | wall clock, Run-All | month-by-month; ~1–3 h on this laptop (I/O-bound on nested reads; cache already built) |
 | Cost per run | local only, no cloud | $0 |
 
 ### Data quality baseline — bronze `drug_event` (from exploration)
@@ -262,22 +262,28 @@ from a normal, expected gap**. Full detail: `notebooks/01_explore_drug_event.ipy
 | Drug-name resolution (`openfda.generic_name`) | ~83% present | Tier-1 source for #5 normalisation |
 | Fan-out per report | ~3.9 drugs, ~3.0 reactions | 10.4M drug rows, 8.0M reaction rows |
 
-### Data quality baseline — Silver `drug_event` (after the build)
+### Data quality baseline — Silver `drug_event` (verified full run)
 
-What a healthy Silver run produces. Numbers below the divider are confirmed on the first full
-Run-All; the one-day figures are the smoke test used to validate the transform.
+What a healthy Silver run produces, from the verified full run (all 24 months, `_run_id`
+`silver_20260805…`). Use these to tell a **real problem from a normal, expected result**.
 
-| Check | Expected / healthy | Note |
+| Check | Verified (all 24 months) | Note |
 |---|---|---|
-| Grain | one row per (case, resolved drug, characterization, reaction) | grain key `report_drug_reaction_key` unique |
-| Silver rows | tens of millions (TR §5.1 est. 10–50M) | after #4 dedup |
-| Duplicates removed (#4) | large fraction of pre-dedup rows | report-level was 0 dup; the dupes live at the atomic grain |
-| Drug resolution rate (#5) | ~80–83% Tier-1 (`generic_name`/`substance_name`) | published every run |
-| Quarantine (#6) | ~19 rows | `drugcharacterization ∉ {1,2,3}` |
-| Null `resolved_drug` / `reaction_pt` | 0 | grain integrity |
+| Grain | one row per (case, resolved drug, characterization, reaction) | grain key `report_drug_reaction_key` **unique** (45,030,932 / 45,030,932) |
+| Silver rows | **45,030,932** | from 93,366,638 atomic (pre-dedup) |
+| Duplicates removed (#4) | **48,335,706 (51.8%)** | dupes are at the atomic grain (repeated dosage lines / synonym collapse) |
+| Drug resolution rate (#5) | **78.46%** via report `generic_name`/`substance_name` | report-level only; full NDC/rxcui resolution is the dbt step (`int_drug_resolution`) |
+| Quarantine (#6) | **431,760** | 431,741 `reaction_pt_null` (3 mega-reports) + 18 `drugcharacterization_out_of_range` + 1 null |
+| Null `resolved_drug` / `reaction_pt` in Silver | **0 / 0** | grain integrity — no null reaction ever enters Silver |
+| Month partitions | **24** | all present; per-month metrics persisted to `silver/_silver_metrics` |
 
-*Smoke test (1 day, `receivedate=20240102`): 4,053 reports → 103,502 atomic → 63,928 Silver rows
-(38% deduped), 78.7% resolved, 0 quarantined, grain key unique.*
+**Mega-report note:** the 431,741 `reaction_pt_null` rejects are **3 reports** (23840947, 23014826,
+22122822 — `reporttype=1`, 1,000–4,113 drugs) whose reactions are **all** blank, so they are fully
+quarantined (`n_drugs × n_reactions` each) and contribute nothing to Silver. Watch for similar
+bulk/mega-reports (they can distort PRR/ROR) — handle in gold by drug-count or `reporttype`.
+
+*(Earlier smoke test, 1 day `receivedate=20240102`: 4,053 reports → 63,928 Silver rows, used only to
+validate the transform before the full run.)*
 
 ---
 

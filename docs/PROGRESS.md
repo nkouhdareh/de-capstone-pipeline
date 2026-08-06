@@ -1,7 +1,7 @@
 # Project Progress & Handoff
 
 *A running snapshot of where the project is, so a fresh session (or a teammate) can pick up fast.*
-**Status as of:** Silver layer coded & smoke-tested — issues #4/#5/#6 (Week 2). Full Run-All pending.
+**Status as of:** Silver layer built & verified — issues #4/#5/#6 done (Week 2). 45.0M clean atomic rows.
 
 ---
 
@@ -37,10 +37,10 @@ drug-safety analyst, with a dashboard. Health domain. Full business case: `docs/
 - **Exploration / data quality**: `notebooks/01_explore_drug_event.ipynb` — all 5 dimensions
 - Week-1 coach answers: `scripts/PoC/week1_coach_answers.md`
 - **Silver layer (PySpark)**: `notebooks/02_build_silver_drug_event.ipynb` — flatten → (case, drug,
-  reaction), cast/decode, **#4** dedup, **#5** tiered normalisation (resolution rate published),
-  **#6** validation/quarantine; writes `silver/` + `quarantine/` Parquet. `docker-compose.yml` gains
-  writable `silver`/`quarantine` mounts (bronze stays read-only). *Smoke-tested on 1 day; full
-  Run-All pending.*
+  reaction), cast/decode, **#4** dedup, **#5** tiered normalisation (rate published), **#6**
+  validation/quarantine. **Verified full run: 45,030,932 clean atomic rows** (from 93.4M pre-dedup,
+  51.8% deduped), all 24 months, grain key unique, 0 null reactions. `docker-compose.yml` mounts
+  `silver`/`quarantine`/`dq_cache`/`spark-tmp` on D: (all Spark scratch off C:); bronze stays read-only.
 
 ## Key data-quality findings (these drive the cleaning)
 | Dimension | Result | Cleaning action |
@@ -52,27 +52,34 @@ drug-safety analyst, with a dashboard. Health domain. Full business case: `docs/
 | Fan-out / skew | ~3.9 drugs & ~3.0 reactions per report; **max 4,113 drugs / 518 reactions** | Silver: handle mega-report skew when flattening |
 | Timeliness | exact 2023–2024 window; batch/quarterly source | note only |
 
-## Silver layer — built (#4 / #5 / #6) — PySpark
+## Silver layer — built & verified (#4 / #5 / #6) — PySpark
 `notebooks/02_build_silver_drug_event.ipynb`. Grain: one row per **(case, resolved drug,
-characterization, reaction)**; columns shaped to feed `fct_report_drug_reaction` (TR §5.2).
+characterization, reaction)**; columns feed `fct_report_drug_reaction` (TR §5.2). Runs **month by
+month** (no whole-dataset shuffle); **all Spark spill + cache on D:** (`SPARK_LOCAL_DIRS=/opt/spark-tmp`,
+`dq_cache` mounted to D:) — never C:. Explicit `CLEAN_REBUILD` (logged, not silent).
 
-- **Flatten** `patient.drug[]` × `patient.reaction[]`; mega-report skew handled — slim the drug
-  struct *before* exploding, then repartition on `(safety_report_id, drug_idx)` before the reaction
-  explode so one 4,113-drug report can't pile onto a single task.
-- **Cast/decode** — dates from `YYYYMMDD`; coded fields decoded; demographics → `Unknown`; age
-  **banded, never exact** (TR §9); seriousness → booleans (BR-12).
-- **#4 dedup** — at the atomic grain. Report-level was 0 dup, but ~**38%** of atomic rows dedup on
-  the sample day: reports repeat the same drug across dosage entries → collapsed to one row per
-  case-drug-reaction (correct case counts). *A real finding the report-level check couldn't see.*
-- **#5 normalisation** — Tier-1 `openfda.generic_name` → `substance_name`; Tier-2 cleaned raw
-  (flagged `unresolved_raw`). **Resolution rate published** (~79% sample day; ~83% expected full).
-- **#6 validation/quarantine** — `drugcharacterization ∈ {1,2,3}` enforced; rejects (~19: codes 4/5
-  + null) routed to `quarantine/drug_event` with a reason, never dropped.
+**Verified full-run results (all 24 months, `_run_id` `silver_20260805…`):**
+- **#4 dedup** — 93,366,638 atomic rows → **45,030,932** deduped (**51.8%** removed). Report-level was
+  0 dup; the dupes are at the atomic grain (a report repeats the same drug across dosage lines →
+  collapsed to one row per case-drug-reaction). Grain key unique (45,030,932 / 45,030,932).
+- **#5 normalisation** — **78.46%** resolved via the report's **own** `generic_name`/`substance_name`
+  (35.3M rows); 9.7M `unresolved_raw` keep a cleaned raw name, flagged. *Report-level only — the full
+  NDC/rxcui resolution is the dbt step (`int_drug_resolution`);* `rxcui`/`product_ndc`/`package_ndc`/
+  `brand_name` are carried through for it. Latest-version guard applied (max `safetyreportversion` per case).
+- **#6 validation/quarantine** — 431,760 rejects, never dropped: **431,741 `reaction_pt_null`**, 18
+  `drugcharacterization_out_of_range`, 1 `drugcharacterization_null`. Silver has **0 null reactions**.
+  The 431,741 come from just **3 mega-reports** (23840947/23014826/22122822, `reporttype=1`,
+  1,000–4,113 drugs) whose reactions are **all** blank — quarantine count = `n_drugs × n_reactions`
+  exactly, so they are 100% quarantined and contribute **nothing** to Silver.
+- **Observability** — per-month metrics persisted to `silver/_silver_metrics` (input/atomic/silver/
+  dups/resolved/quarantined per month).
 - **Output** — `D:/capstone/data/silver/drug_event/` (Parquet, partitioned by `receive_year`/`month`)
-  + `D:/capstone/data/quarantine/drug_event/`. Run steps + baselines in `runbook.md` §2–§3.
+  + `quarantine/drug_event/` + `_silver_metrics/`. Run steps + baselines in `runbook.md` §2–§3.
 
-*Smoke-tested end-to-end on 1 day (`receivedate=20240102`). Full Run-All still to do — the real
-resolution / dedup / quarantine counts get filled into `runbook.md` §3 from that run.*
+**Watch for gold:** (1) drug resolution is report-level (78%) — the dbt NDC join must consolidate
+identities before PRR/ROR are trustworthy, else case counts fragment across name variants; (2) the 3
+mega-reports (and any bulk/study reports) can distort disproportionality — flag/exclude by drug-count
+or `reporttype` in gold.
 
 ## NEXT: load Silver → Snowflake, then model in dbt
 1. Land the Silver Parquet in Snowflake `RAW` (external stage — TR-09/10).
@@ -89,9 +96,8 @@ resolution / dedup / quarantine counts get filled into `runbook.md` §3 from tha
 - **Ingestion:** see `runbook.md` §2.
 
 ## Board issues (github.com/nkouhdareh/de-capstone-pipeline)
-- **Done:** #1 repo/env, #2 first API call, #3 bronze ingestion, #8 ADR-001
-- **Code complete (Silver, full run pending):** #4 dedup, #5 normalisation, #6 validation/quarantine
-- **Next:** load Silver → Snowflake + dbt marts; #7 dbt tests on staging
+- **Done:** #1 repo/env, #2 first API call, #3 bronze ingestion, #8 ADR-001, **#4 dedup · #5 normalisation · #6 validation/quarantine** (Silver built & verified)
+- **Next:** load Silver → Snowflake + dbt marts (incl. `int_drug_resolution` NDC join); #7 dbt tests on staging
 
 ## Rules / reminders
 - **Data never in git** (lives on D: drive). Secrets in `.env` only.
