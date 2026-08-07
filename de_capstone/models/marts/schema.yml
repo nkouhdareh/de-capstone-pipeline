@@ -17,6 +17,20 @@ models:
       - name: reaction_pt
         tests: [not_null, unique]
 
+  - name: dim_date
+    description: One row per calendar day (FAERS 2023-2024 window); date_key = yyyymmdd.
+    columns:
+      - name: date_key
+        tests: [not_null, unique]
+      - name: full_date
+        tests: [not_null]
+
+  - name: dim_reporter
+    description: One row per (reporter qualification, reporter type, occur country).
+    columns:
+      - name: reporter_key
+        tests: [not_null, unique]
+
   - name: fct_report_drug_reaction
     description: One row per (case, drug, reaction) — grain TR §5.2.
     columns:
@@ -32,6 +46,16 @@ models:
           - not_null
           - relationships:
               arguments: { to: ref('dim_reaction'), field: reaction_key }
+      - name: reporter_key
+        tests:
+          - not_null
+          - relationships:
+              arguments: { to: ref('dim_reporter'), field: reporter_key }
+      - name: receive_date_key
+        tests:
+          - not_null
+          - relationships:
+              arguments: { to: ref('dim_date'), field: date_key }
       - name: drug_characterisation
         tests:
           - not_null

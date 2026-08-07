@@ -2,7 +2,8 @@
 
 with events as (
     select *,
-        {{ dbt_utils.generate_surrogate_key(['resolved_drug', 'rxcui', 'brand_name']) }} as drug_nk
+        {{ dbt_utils.generate_surrogate_key(['resolved_drug', 'rxcui', 'brand_name']) }} as drug_nk,
+        {{ dbt_utils.generate_surrogate_key(['reporter_qualification_code', 'reporter_type', 'occur_country']) }} as reporter_key
     from {{ ref('stg_drug_event') }}
 ),
 res as ( select drug_nk, canonical_drug_name, resolution_tier from {{ ref('int_drug_resolution') }} ),
@@ -13,6 +14,7 @@ select
     e.safety_report_id,
     coalesce(dd.drug_key, -1) as drug_key,
     rk.reaction_key,
+    e.reporter_key,
     cast(to_char(e.receive_date, 'YYYYMMDD') as integer) as receive_date_key,
     e.receive_date,
     e.drug_characterization as drug_characterisation,
@@ -20,7 +22,7 @@ select
     e.is_serious,
     e.outcome_death, e.outcome_hospitalisation, e.outcome_life_threatening,
     e.outcome_disability, e.outcome_congenital_anomaly, e.outcome_other,
-    e.reporter_type, e.occur_country, e.patient_age_band, e.patient_sex, e.report_version,
+    e.patient_age_band, e.patient_sex, e.report_version,
     '{{ invocation_id }}' as _run_id,
     {{ dbt.current_timestamp() }} as _loaded_at
 from events e
