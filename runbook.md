@@ -282,6 +282,14 @@ What a healthy Silver run produces, from the verified full run (all 24 months, `
 quarantined (`n_drugs × n_reactions` each) and contribute nothing to Silver. Watch for similar
 bulk/mega-reports (they can distort PRR/ROR) — handle in gold by drug-count or `reporttype`.
 
+**Drug resolution — completed later in dbt (next stage):** Silver resolves names only via the report's
+own `generic_name`/`substance_name` (78.46%). The full resolution runs in **dbt** (`int_drug_resolution`
+→ `dim_drug`) by joining the **NDC directory** (`drug_ndc`, 136,520 products, already ingested), using
+the event-level ids Silver carries (`rxcui`, `product_ndc`, `package_ndc`, `brand_name`). **Match order:**
+`rxcui` → normalised generic name → brand name → active-ingredient name. **Ambiguous matches are not
+guessed** — they stay unresolved (`drug_key = -1`) and are counted. This must run before PRR/ROR are
+trusted, or case counts fragment across name variants.
+
 *(Earlier smoke test, 1 day `receivedate=20240102`: 4,053 reports → 63,928 Silver rows, used only to
 validate the transform before the full run.)*
 
@@ -345,3 +353,61 @@ docker compose down -v
 - **Your data and notebooks are never deleted** by any of these — they live in host folders (bind mounts), not inside Docker.
 
 *Cloud-side to destroy to avoid cost: none yet (everything is local so far).*
+
+
+---
+
+## Week 3 — dbt on Snowflake (build, test, and scale to 24 months)
+
+**Status:** built & tested on a **1-month smoke** (2023-01). Everything below also drives the 24-month scale-up.
+
+### Environment (Git Bash / MINGW64)
+- **Two venvs** at the repo root: `.venv` (ingestion) and **`.venv-dbt`** (dbt — created Week 3, keeps `.venv` clean).
+  `python -m venv .venv-dbt` → `source .venv-dbt/Scripts/activate` → `pip install dbt-snowflake` (pulls dbt-core + snowflake-connector).
+- **dbt project:** `de_capstone/` (underscore) inside the `de-capstone/` (hyphen) repo. **Run all `dbt` commands from inside `de_capstone/`.**
+- **Reliable `dbt`:** in Git Bash, activation can leave `python` on the *system* Python — safest is an alias to the exe:
+  `alias dbt="/d/capstone/de-capstone/.venv-dbt/Scripts/dbt.exe"`
+- **Snowflake:** account `AAFWBCY-ZE61835` · user `NKOUH` · role `DE_CAPSTONE_DBT_ROLE` · wh `DE_CAPSTONE_WH` · db `DE_CAPSTONE` · schemas `RAW` (source data) + `DBT_DEV` (dbt models).
+- **Creds:** git-ignored `.env` at repo root — `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PASSWORD` (single-quote the values). `de_capstone/profiles.yml` reads all three via `env_var()`. Load them into the shell (needed by loader AND dbt):
+  `set -a; source .env; set +a`   (from repo root; from inside `de_capstone/` use `source ../.env`).
+
+### Fresh-terminal setup (every new shell)
+```bash
+cd /d/capstone/de-capstone
+set -a; source .env; set +a
+alias dbt="/d/capstone/de-capstone/.venv-dbt/Scripts/dbt.exe"
+cd de_capstone
+dbt debug            # expect: All checks passed!
+```
+
+### Load raw -> Snowflake RAW
+- **DDL** (once, Snowflake worksheet): `scripts/snowflake/ddl_raw.sql` — creates `RAW.SILVER_DRUG_EVENT` (35 cols), `RAW.DRUG_NDC` (VARIANT), stages `SILVER_STAGE`/`NDC_STAGE`, file formats `FF_PARQUET`/`FF_JSON`.
+- **Loader** `scripts/load_raw.py` (connects via the 3 env vars; PUT -> COPY):
+  `.venv-dbt/Scripts/python.exe scripts/load_raw.py`  (from repo root, after `source .env`).
+  As written it loads **ONE month (2023-01)** + the **full NDC**. Expect `NDC 136520`, `Silver 1549263`.
+- **On-disk sources:** Silver Parquet `D:/capstone/data/silver/drug_event/receive_year=YYYY/receive_month=M/*.parquet` (24 partitions 2023-01..2024-12, **45,030,932** rows total). NDC `D:/capstone/data/bronze/drug_ndc/part-0000.json` (NDJSON, 136,520).
+- **Why 35 cols:** Spark partition cols `receive_year`/`receive_month` are path-encoded (not in the Parquet files) -> recomputed from `receive_date` downstream. COPY uses `MATCH_BY_COLUMN_NAME=CASE_INSENSITIVE`.
+
+### Build & test
+```bash
+dbt deps                                # once - installs dbt_utils
+dbt build                               # all models + seed + 27 tests, in DAG order
+dbt test                                # tests only
+dbt docs generate && dbt docs serve     # lineage at localhost:8080 (graph icon, bottom-right); Ctrl+C to stop
+```
+Models (`de_capstone/models/`): `staging/{stg_drug_event,stg_drug_ndc}` (views) -> `intermediate/int_drug_resolution` (table) -> `marts/{dim_drug,dim_reaction,fct_report_drug_reaction}` -> `semantic/sem_signal_metrics` (view). Macros: `normalize_drug_name`, `signal_metrics`. Seed: `seeds/signal_worked_example.csv`. Thresholds: `vars:` in `dbt_project.yml` (`signal_min_cases:3, signal_min_prr:2.0, signal_min_chi2:4.0`).
+
+### >>> SCALE TO ALL 24 MONTHS (45,030,932 rows)
+1. **Load all 24 months.** Either edit `scripts/load_raw.py` to loop every `receive_year=*/receive_month=*` partition (PUT each into `@RAW.SILVER_STAGE/y=<y>/m=<m>/`, then one `COPY INTO`), **or copy the ready-made full loader** `dbt_reference/scripts/snowflake/load_to_snowflake.py` (already loops all months + has a `--max-partitions` smoke flag).
+2. **Clear the smoke first** (worksheet, or the full loader does it): `TRUNCATE TABLE RAW.SILVER_DRUG_EVENT;` and `REMOVE @RAW.SILVER_STAGE;` — otherwise COPY skips already-loaded files. NDC can stay.
+3. Run the loader — PUT ~= **3.7 GB / 486 files**, several minutes. Verify `SELECT COUNT(*) FROM RAW.SILVER_DRUG_EVENT` ~= **45,030,932**.
+4. `dbt build` — models are `table`/`view`, so this fully rebuilds on the new data (no `--full-refresh` needed). `fct_report_drug_reaction` ~= 45M.
+5. `dbt test` (27 green). Re-check resolution rate + top signals (full data cuts the 1-month sparsity -> trustworthy signals). Re-publish the resolution rate.
+
+### Still TODO (not built - core-first)
+- `dim_reporter` + `dim_date` and their FK `relationships` tests (fct currently carries `reporter_type`/`occur_country` as columns + a degenerate integer `receive_date_key`) — for full TR section 5.
+- pytest TR-37 (normalisation) / TR-38 (metrics) — dbt covers TR-38 in-warehouse; Python copies live in `dbt_reference/tests/`.
+- S3 external stage (TR-09; currently internal stage — documented deviation), Airflow DAGs, Streamlit.
+
+### Reference "answer key"
+`dbt_reference/` (read-only) is a verified copy of the whole implementation — diff against it, and reuse its full 24-month loader.

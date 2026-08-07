@@ -1,7 +1,7 @@
 # Project Progress & Handoff
 
 *A running snapshot of where the project is, so a fresh session (or a teammate) can pick up fast.*
-**Status as of:** Silver layer built & verified — issues #4/#5/#6 done (Week 2). 45.0M clean atomic rows.
+**Status as of:** Silver done (Week 2 — 45,030,932 clean rows). **Week 3: dbt on Snowflake built & tested on a 1-month smoke** — 7 models + **27/27 dbt tests** green (recovered clozapine→neutropenia, Paxlovid rebound, fentanyl/abuse). **NEXT: scale to all 24 months** — full procedure in `runbook.md` → "Week 3 — dbt on Snowflake".
 
 ---
 
@@ -81,14 +81,40 @@ identities before PRR/ROR are trustworthy, else case counts fragment across name
 mega-reports (and any bulk/study reports) can distort disproportionality — flag/exclude by drug-count
 or `reporttype` in gold.
 
-## NEXT: load Silver → Snowflake, then model in dbt
-1. Land the Silver Parquet in Snowflake `RAW` (external stage — TR-09/10).
-2. dbt: `stg_` (rename/cast, 1:1) → `int_` (modelling on the clean atomic Silver) → `dim_`/`fct_`
-   marts: `fct_report_drug_reaction`, `dim_drug`, `dim_reaction`, `dim_reporter`, `dim_date` (TR §5).
-3. `sem_signal_metrics` — PRR / ROR / χ² + signal flag, formulas in exactly one model (TR §5.3, TR-24).
-4. dbt tests (**#7**) — key uniqueness/not-null, accepted-values on codes, the PRR/ROR worked-example
-   test (TR-33…TR-38).
-5. Consider **ADR-005** (drug-name resolution tiers) — referenced by TR §12 / TR-19, not yet written.
+## dbt on Snowflake — BUILT & TESTED (Week 3) ✅ (1-month smoke)
+Rebuilt hands-on in a new **`.venv-dbt`** (keeps `.venv` clean); dbt project in **`de_capstone/`**
+(underscore) inside the repo. Snowflake: account `AAFWBCY-ZE61835`, user `NKOUH`, role
+`DE_CAPSTONE_DBT_ROLE`, wh `DE_CAPSTONE_WH`, db `DE_CAPSTONE`, schemas **`RAW`** (source) + **`DBT_DEV`**
+(models); creds in git-ignored `.env`, read by `profiles.yml` via `env_var()`.
+**All run/build/scale commands: `runbook.md` → "Week 3 — dbt on Snowflake".**
+
+- **Loaded (smoke = ONE month, 2023-01):** `RAW.SILVER_DRUG_EVENT` = 1,549,263 · `RAW.DRUG_NDC` = 136,520.
+  Loader `scripts/load_raw.py` (internal stage → PUT → COPY; not S3 yet — documented deviation from TR-09).
+  DDL `scripts/snowflake/ddl_raw.sql`.
+- **Models (all built):** `stg_drug_event`, `stg_drug_ndc` (views) → `int_drug_resolution` (table; NDC join
+  rxcui→generic→brand→ingredient, exact-only, **ADR-005 written**; 13,243 signatures) → `dim_drug` (2,553;
+  drug_key −1 = Unknown), `dim_reaction` (8,213), `fct_report_drug_reaction` (1.55M, clustered on
+  receive_date) → `sem_signal_metrics` (view; PRR/ROR/ROR-CI/χ², thresholds as dbt `vars`, formulas only in
+  `macros/signal_metrics.sql` — TR-24). Macros: `normalize_drug_name`, `signal_metrics`.
+- **#7 tests: 27/27 pass** — key unique/not-null, FK `relationships`, `accepted_values`, row-count
+  plausibility, and the **PRR/ROR hand-computed worked example** (seed `signal_worked_example.csv` +
+  `tests/assert_signal_worked_example.sql`, TR-38).
+- **Results (smoke):** resolution **32.3% of distinct drugs / 86.9% of report-rows**; 39,714 signals /
+  197,868 pairs (over-flagged — 1-month sparsity, fixed by full data). Recovered real signals:
+  **clozapine→neutropenia** (PRR 78), **Paxlovid→COVID-19/recurrence**, **fentanyl→drug abuse**.
+  Lineage figure `docs/assets/pipeline_lineage.svg`; walk-through `docs/Layer Explanation/dbt steps.md`.
+- **Reference "answer key":** verified copy of the whole build at **`dbt_reference/`** (read-only), incl.
+  the FULL 24-month loader `dbt_reference/scripts/snowflake/load_to_snowflake.py`.
+
+## NEXT: scale to all 24 months (45,030,932 rows) — step-by-step in `runbook.md`
+1. Load ALL 24 partitions into `RAW.SILVER_DRUG_EVENT` (loop `scripts/load_raw.py`, or copy the full
+   `dbt_reference/…/load_to_snowflake.py`). **`TRUNCATE RAW.SILVER_DRUG_EVENT` + `REMOVE @RAW.SILVER_STAGE`
+   first** (COPY skips already-loaded files). PUT ≈ 3.7 GB / 486 files. Expect ≈ 45,030,932 rows.
+2. `dbt build` (table/view → full rebuild, no `--full-refresh`). `fct` ≈ 45M. → `dbt test` (27 green).
+3. Re-publish resolution rate + top signals (sparsity drops).
+4. Then, for full TR §5: add **`dim_reporter`** + **`dim_date`** (+ FK tests) — fct currently keeps
+   `reporter_type`/`occur_country` as columns and a degenerate integer `receive_date_key`. Also pytest
+   TR-37/38 (Python copies in `dbt_reference/tests/`), then Airflow + Streamlit.
 
 ## How to run (quick)
 - **Explore:** `docker compose up` → http://localhost:8888 → `work/01_explore_drug_event.ipynb`. First cache JSON→Parquet (`/home/jovyan/dq_cache`) for speed. Full detail + failure fixes in `runbook.md`.
@@ -97,7 +123,8 @@ or `reporttype` in gold.
 
 ## Board issues (github.com/nkouhdareh/de-capstone-pipeline)
 - **Done:** #1 repo/env, #2 first API call, #3 bronze ingestion, #8 ADR-001, **#4 dedup · #5 normalisation · #6 validation/quarantine** (Silver built & verified)
-- **Next:** load Silver → Snowflake + dbt marts (incl. `int_drug_resolution` NDC join); #7 dbt tests on staging
+- **Done (Week 3):** dbt on Snowflake — staging → `int_drug_resolution` → star schema → `sem_signal_metrics`, **#7 tests 27/27**, on a 1-month smoke.
+- **Next:** scale to all 24 months (45M); then add `dim_reporter`/`dim_date`; Airflow; Streamlit.
 
 ## Rules / reminders
 - **Data never in git** (lives on D: drive). Secrets in `.env` only.
