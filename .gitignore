@@ -61,3 +61,5 @@ Thumbs.db
 dbt_reference/
 docs/GPT Secrests/
 docs/Layer Explanation/
+scripts/PoC/*.md
+scripts/PoC/*.docx
