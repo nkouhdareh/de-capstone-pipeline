@@ -1,0 +1,4 @@
+drug,reaction,a,b,c,d,expected_prr,expected_ror,expected_ror_ci_lower,expected_chi2_yates,expected_is_signal
+SIGNAL_DRUG,HEADACHE,20,80,100,9800,19.800000,24.500000,14.447996,285.317752,true
+WEAK_DRUG,NAUSEA,2,10,50,9938,33.293333,39.752000,8.492890,33.333217,false
+NULL_DRUG,DIZZINESS,50,500,100,1000,1.000000,1.000000,0.700436,0.008250,false

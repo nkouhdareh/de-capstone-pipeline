@@ -1,0 +1,18 @@
+version: 2
+
+models:
+  - name: sem_signal_metrics
+    description: PRR/ROR/chi2 signals per (drug, reaction). Formulas live here only (TR-24).
+    columns:
+      - name: drug_key
+        tests:
+          - not_null
+          - relationships:
+              arguments: { to: ref('dim_drug'), field: drug_key }
+      - name: a
+        tests: [not_null]
+      - name: is_signal
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments: { combination_of_columns: ["drug_key", "reaction_key"] }

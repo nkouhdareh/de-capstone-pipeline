@@ -1,0 +1,13 @@
+version: 2
+
+models:
+  - name: int_drug_resolution
+    description: NDC resolution per distinct drug signature (ADR-005).
+    columns:
+      - name: drug_nk
+        tests: [not_null, unique]
+      - name: resolution_tier
+        tests:
+          - not_null
+          - accepted_values:
+              arguments: { values: ["rxcui","generic","brand","ingredient","unresolved"] }

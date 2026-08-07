@@ -1,0 +1,43 @@
+version: 2
+
+models:
+  - name: dim_drug
+    description: One row per resolved drug identity; drug_key -1 = Unknown.
+    columns:
+      - name: drug_key
+        tests: [not_null, unique]
+      - name: drug_name
+        tests: [not_null]
+
+  - name: dim_reaction
+    description: One row per MedDRA preferred term.
+    columns:
+      - name: reaction_key
+        tests: [not_null, unique]
+      - name: reaction_pt
+        tests: [not_null, unique]
+
+  - name: fct_report_drug_reaction
+    description: One row per (case, drug, reaction) — grain TR §5.2.
+    columns:
+      - name: report_drug_reaction_key
+        tests: [not_null, unique]
+      - name: drug_key
+        tests:
+          - not_null
+          - relationships:
+              arguments: { to: ref('dim_drug'), field: drug_key }
+      - name: reaction_key
+        tests:
+          - not_null
+          - relationships:
+              arguments: { to: ref('dim_reaction'), field: reaction_key }
+      - name: drug_characterisation
+        tests:
+          - not_null
+          - accepted_values:
+              arguments: { values: ["SUSPECT", "CONCOMITANT", "INTERACTING"] }
+      - name: patient_sex
+        tests:
+          - accepted_values:
+              arguments: { values: ["Unknown", "Male", "Female"] }
