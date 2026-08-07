@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: raw
+    database: DE_CAPSTONE
+    schema: RAW
+    tables:
+      - name: silver_drug_event
+        identifier: SILVER_DRUG_EVENT
+      - name: drug_ndc
+        identifier: DRUG_NDC
