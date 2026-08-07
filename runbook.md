@@ -381,7 +381,7 @@ dbt debug            # expect: All checks passed!
 ```
 
 ### Load raw -> Snowflake RAW
-- **DDL** (once, Snowflake worksheet): `scripts/snowflake/ddl_raw.sql` — creates `RAW.SILVER_DRUG_EVENT` (35 cols), `RAW.DRUG_NDC` (VARIANT), stages `SILVER_STAGE`/`NDC_STAGE`, file formats `FF_PARQUET`/`FF_JSON`.
+- **DDL** (once, Snowflake worksheet): `scripts/ddl_raw.sql` — creates `RAW.SILVER_DRUG_EVENT` (35 cols), `RAW.DRUG_NDC` (VARIANT), stages `SILVER_STAGE`/`NDC_STAGE`, file formats `FF_PARQUET`/`FF_JSON`.
 - **Loader** `scripts/load_raw.py` (connects via the 3 env vars; PUT -> COPY):
   `.venv-dbt/Scripts/python.exe scripts/load_raw.py`  (from repo root, after `source .env`).
   As written it loads **ONE month (2023-01)** + the **full NDC**. Expect `NDC 136520`, `Silver 1549263`.
@@ -391,23 +391,25 @@ dbt debug            # expect: All checks passed!
 ### Build & test
 ```bash
 dbt deps                                # once - installs dbt_utils
-dbt build                               # all models + seed + 27 tests, in DAG order
+dbt build                               # 9 models + seed + 36 tests, in DAG order
 dbt test                                # tests only
 dbt docs generate && dbt docs serve     # lineage at localhost:8080 (graph icon, bottom-right); Ctrl+C to stop
 ```
-Models (`de_capstone/models/`): `staging/{stg_drug_event,stg_drug_ndc}` (views) -> `intermediate/int_drug_resolution` (table) -> `marts/{dim_drug,dim_reaction,fct_report_drug_reaction}` -> `semantic/sem_signal_metrics` (view). Macros: `normalize_drug_name`, `signal_metrics`. Seed: `seeds/signal_worked_example.csv`. Thresholds: `vars:` in `dbt_project.yml` (`signal_min_cases:3, signal_min_prr:2.0, signal_min_chi2:4.0`).
+Models (`de_capstone/models/`): `staging/{stg_drug_event,stg_drug_ndc}` (views) -> `intermediate/int_drug_resolution` (table) -> `marts/{dim_drug,dim_reaction,dim_reporter,dim_date,fct_report_drug_reaction}` -> `semantic/sem_signal_metrics` (view). Macros: `normalize_drug_name`, `signal_metrics`. Seed: `seeds/signal_worked_example.csv`. Thresholds: `vars:` in `dbt_project.yml` (`signal_min_cases:3, signal_min_prr:2.0, signal_min_chi2:4.0`).
 
 ### >>> SCALE TO ALL 24 MONTHS (45,030,932 rows)
-1. **Load all 24 months.** Either edit `scripts/load_raw.py` to loop every `receive_year=*/receive_month=*` partition (PUT each into `@RAW.SILVER_STAGE/y=<y>/m=<m>/`, then one `COPY INTO`), **or copy the ready-made full loader** `dbt_reference/scripts/snowflake/load_to_snowflake.py` (already loops all months + has a `--max-partitions` smoke flag).
+1. **Load all 24 months** with **`scripts/load_to_snowflake.py`** (its DDL, `scripts/ddl_raw.sql`, runs automatically). It loops every `receive_year=*/receive_month=*` partition (PUT into `@RAW.SILVER_STAGE/y=<y>/m=<m>/`, then one `COPY INTO`), **`TRUNCATE`s + `REMOVE`s the stage itself**, and has a `--max-partitions` smoke flag. From the repo root: `.venv-dbt/Scripts/python.exe scripts/load_to_snowflake.py --what silver`.
 2. **Clear the smoke first** (worksheet, or the full loader does it): `TRUNCATE TABLE RAW.SILVER_DRUG_EVENT;` and `REMOVE @RAW.SILVER_STAGE;` — otherwise COPY skips already-loaded files. NDC can stay.
 3. Run the loader — PUT ~= **3.7 GB / 486 files**, several minutes. Verify `SELECT COUNT(*) FROM RAW.SILVER_DRUG_EVENT` ~= **45,030,932**.
 4. `dbt build` — models are `table`/`view`, so this fully rebuilds on the new data (no `--full-refresh` needed). `fct_report_drug_reaction` ~= 45M.
-5. `dbt test` (27 green). Re-check resolution rate + top signals (full data cuts the 1-month sparsity -> trustworthy signals). Re-publish the resolution rate.
+5. `dbt test` (36 green — 24-month load + full star schema). Re-check resolution rate + top signals (full data cuts the 1-month sparsity -> trustworthy signals). Re-publish the resolution rate.
+
+### TR §5 star schema — DONE ✅
+Added `dim_reporter` (**726**; grain = reporter qualification/type + `occur_country`; `reporter_key` = a `generate_surrogate_key` hash shared with fct → no join) and `dim_date` (**731**; complete 2023–2024 `date_spine`; `date_key` = yyyymmdd = fct `receive_date_key`). fct now carries `reporter_key` + `receive_date_key` as real FKs (degenerate `reporter_type`/`occur_country` dropped); **4 conformed dims, all not-null + FK `relationships` tested — 9 models · 36/36 green.**
 
 ### Still TODO (not built - core-first)
-- `dim_reporter` + `dim_date` and their FK `relationships` tests (fct currently carries `reporter_type`/`occur_country` as columns + a degenerate integer `receive_date_key`) — for full TR section 5.
 - pytest TR-37 (normalisation) / TR-38 (metrics) — dbt covers TR-38 in-warehouse; Python copies live in `dbt_reference/tests/`.
 - S3 external stage (TR-09; currently internal stage — documented deviation), Airflow DAGs, Streamlit.
 
 ### Reference "answer key"
-`dbt_reference/` (read-only) is a verified copy of the whole implementation — diff against it, and reuse its full 24-month loader.
+`dbt_reference/` (read-only) is a verified copy of the whole implementation — diff against it. (The 24-month loader now lives in the project at `scripts/load_to_snowflake.py` + `scripts/ddl_raw.sql`.)
