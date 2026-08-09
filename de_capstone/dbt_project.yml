@@ -39,6 +39,7 @@ vars:
   signal_min_cases: 3
   signal_min_prr: 2.0
   signal_min_chi2: 4.0
+  signal_ror_ci_min: 1.0
 
 seeds:
   de_capstone:

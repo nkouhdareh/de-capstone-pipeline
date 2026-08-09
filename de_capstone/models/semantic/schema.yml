@@ -13,6 +13,8 @@ models:
         tests: [not_null]
       - name: is_signal
         tests: [not_null]
+      - name: is_signal_strict
+        tests: [not_null]
     tests:
       - dbt_utils.unique_combination_of_columns:
           arguments: { combination_of_columns: ["drug_key", "reaction_key"] }

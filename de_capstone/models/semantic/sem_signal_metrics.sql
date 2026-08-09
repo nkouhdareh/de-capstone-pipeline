@@ -36,7 +36,11 @@ select
     m.prr, m.ror, m.ror_ci_lower, m.chi2_yates,
     coalesce(m.a >= {{ var('signal_min_cases') }}
         and m.prr >= {{ var('signal_min_prr') }}
-        and m.chi2_yates >= {{ var('signal_min_chi2') }}, false) as is_signal
+        and m.chi2_yates >= {{ var('signal_min_chi2') }}, false) as is_signal,
+    coalesce(m.a >= {{ var('signal_min_cases') }}
+        and m.prr >= {{ var('signal_min_prr') }}
+        and m.chi2_yates >= {{ var('signal_min_chi2') }}
+        and m.ror_ci_lower > {{ var('signal_ror_ci_min') }}, false) as is_signal_strict
 from metrics m
 left join {{ ref('dim_drug') }} dd on m.drug_key = dd.drug_key
 left join {{ ref('dim_reaction') }} rx on m.reaction_key = rx.reaction_key

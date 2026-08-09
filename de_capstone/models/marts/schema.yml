@@ -65,3 +65,17 @@ models:
         tests:
           - accepted_values:
               arguments: { values: ["Unknown", "Male", "Female"] }
+  - name: fct_signal_metrics
+    description: PRR/ROR/chi2 per (drug, reaction, month) — period-grain signals (TR §5.1).
+    columns:
+      - name: period_key
+        tests: [not_null]
+      - name: year
+        tests: [not_null]
+      - name: month
+        tests: [not_null]
+      - name: is_signal_strict
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments: { combination_of_columns: ["drug_key", "reaction_key", "period_key"] }
