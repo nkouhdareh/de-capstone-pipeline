@@ -391,21 +391,26 @@ dbt debug            # expect: All checks passed!
 ### Build & test
 ```bash
 dbt deps                                # once - installs dbt_utils
-dbt build                               # 9 models + seed + 36 tests, in DAG order
+dbt build                               # 10 models + seed + 42 tests, in DAG order
 dbt test                                # tests only
 dbt docs generate && dbt docs serve     # lineage at localhost:8080 (graph icon, bottom-right); Ctrl+C to stop
 ```
-Models (`de_capstone/models/`): `staging/{stg_drug_event,stg_drug_ndc}` (views) -> `intermediate/int_drug_resolution` (table) -> `marts/{dim_drug,dim_reaction,dim_reporter,dim_date,fct_report_drug_reaction}` -> `semantic/sem_signal_metrics` (view). Macros: `normalize_drug_name`, `signal_metrics`. Seed: `seeds/signal_worked_example.csv`. Thresholds: `vars:` in `dbt_project.yml` (`signal_min_cases:3, signal_min_prr:2.0, signal_min_chi2:4.0`).
+Models (`de_capstone/models/`): `staging/{stg_drug_event,stg_drug_ndc}` (views) -> `intermediate/int_drug_resolution` (table) -> `marts/{dim_drug,dim_reaction,dim_reporter,dim_date,fct_report_drug_reaction,fct_signal_metrics}` -> `semantic/sem_signal_metrics` (view). Macros: `normalize_drug_name`, `signal_metrics`. Seed: `seeds/signal_worked_example.csv`. Thresholds: `vars:` in `dbt_project.yml` (`signal_min_cases:3, signal_min_prr:2.0, signal_min_chi2:4.0, signal_ror_ci_min:1.0`).
 
 ### >>> SCALE TO ALL 24 MONTHS (45,030,932 rows)
 1. **Load all 24 months** with **`scripts/load_to_snowflake.py`** (its DDL, `scripts/ddl_raw.sql`, runs automatically). It loops every `receive_year=*/receive_month=*` partition (PUT into `@RAW.SILVER_STAGE/y=<y>/m=<m>/`, then one `COPY INTO`), **`TRUNCATE`s + `REMOVE`s the stage itself**, and has a `--max-partitions` smoke flag. From the repo root: `.venv-dbt/Scripts/python.exe scripts/load_to_snowflake.py --what silver`.
 2. **Clear the smoke first** (worksheet, or the full loader does it): `TRUNCATE TABLE RAW.SILVER_DRUG_EVENT;` and `REMOVE @RAW.SILVER_STAGE;` — otherwise COPY skips already-loaded files. NDC can stay.
 3. Run the loader — PUT ~= **3.7 GB / 486 files**, several minutes. Verify `SELECT COUNT(*) FROM RAW.SILVER_DRUG_EVENT` ~= **45,030,932**.
 4. `dbt build` — models are `table`/`view`, so this fully rebuilds on the new data (no `--full-refresh` needed). `fct_report_drug_reaction` ~= 45M.
-5. `dbt test` (36 green — 24-month load + full star schema). Re-check resolution rate + top signals (full data cuts the 1-month sparsity -> trustworthy signals). Re-publish the resolution rate.
+5. `dbt test` (42 green — 24-month load + star schema + 3 improvements). Re-check resolution rate + top signals (full data cuts the 1-month sparsity -> trustworthy signals). Re-publish the resolution rate.
 
 ### TR §5 star schema — DONE ✅
-Added `dim_reporter` (**726**; grain = reporter qualification/type + `occur_country`; `reporter_key` = a `generate_surrogate_key` hash shared with fct → no join) and `dim_date` (**731**; complete 2023–2024 `date_spine`; `date_key` = yyyymmdd = fct `receive_date_key`). fct now carries `reporter_key` + `receive_date_key` as real FKs (degenerate `reporter_type`/`occur_country` dropped); **4 conformed dims, all not-null + FK `relationships` tested — 9 models · 36/36 green.**
+Added `dim_reporter` (**726**; grain = reporter qualification/type + `occur_country`) and `dim_date` (**731**; complete 2023–2024 `date_spine`; `date_key` = yyyymmdd). fct **joins all 4 dims** to fetch their keys — `dim_reporter` via a NULL-safe `equal_null` join on the 3 natural cols, `dim_date` on `receive_date = full_date` — dropping the degenerate `reporter_type`/`occur_country`; **4 conformed dims, all not-null + FK `relationships` tested — 9 models · 36/36 green.** *(Refinement: keys were first computed inline (hash / `to_char`) — FK-valid but left the two dims unlinked in the DAG; refactored to joins so the lineage shows the complete star — `docs/assets/dbt-dag-refinement.png`. Keys identical, tests unchanged.)*
+
+### dbt improvements — DONE ✅ (period metrics · ROR-CI · Airflow calendar)
+- **Period-grain signals:** `marts/fct_signal_metrics` (table, drug×reaction×**month**, **5,069,399**) — same macros, answers "this period" (TR §5.1); `sem_signal_metrics` stays all-time. Tests: not-null `period_key`/`year`/`month` + unique `(drug_key, reaction_key, period_key)`.
+- **ROR-CI flag:** `is_signal_strict` (= `is_signal` and `ror_ci_lower > signal_ror_ci_min` [1.0]) on both signal models; `is_signal` unchanged (TR-23). Prunes 0.85% monthly / 0.09% all-time.
+- **Airflow-ready `dim_date`:** calendar derived from distinct `receive_date` (via `stg_drug_event`), not a hardcoded 2023–2024 `date_spine` — a future scheduled load auto-extends it (same 731 rows today). fct→dim_date FK re-verified. **10 models · 42/42 tests.**
 
 ### Still TODO (not built - core-first)
 - pytest TR-37 (normalisation) / TR-38 (metrics) — dbt covers TR-38 in-warehouse; Python copies live in `dbt_reference/tests/`.

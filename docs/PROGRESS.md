@@ -1,7 +1,7 @@
 # Project Progress & Handoff
 
 *A running snapshot of where the project is, so a fresh session (or a teammate) can pick up fast.*
-**Status as of:** Silver done (Week 2 — 45,030,932 clean rows). **Week 3: dbt on Snowflake — 24 months + full TR §5 star schema ✅** — 9 models on **45,030,932** rows + **36/36 dbt tests** green (4 conformed dims, all FK-tested); real signals recovered (clozapine→neutropenia PRR 35.9, Paxlovid rebound PRR 228, opioid dependence). **NEXT: pytest TR-37/38, S3 external stage (TR-09), then Airflow + Streamlit** — procedure in `runbook.md` → "Week 3 — dbt on Snowflake".
+**Status as of:** Silver done (Week 2 — 45,030,932 clean rows). **Week 3: dbt on Snowflake — 24 months + full TR §5 star schema + 3 improvements ✅** — **10 models · 42/42 dbt tests** green (4 conformed dims all FK-tested; period-grain signals; ROR-CI strict flag; Airflow-ready calendar); real signals recovered (clozapine→neutropenia PRR 35.9, Paxlovid rebound PRR 228, opioid dependence). **NEXT: pytest TR-37/38, S3 external stage (TR-09), then Airflow + Streamlit** — procedure in `runbook.md` → "Week 3 — dbt on Snowflake".
 
 ---
 
@@ -92,13 +92,13 @@ Rebuilt hands-on in a new **`.venv-dbt`** (keeps `.venv` clean); dbt project in 
   Loader `scripts/load_to_snowflake.py` (internal stage → PUT → COPY; `TRUNCATE`s + `REMOVE`s the stage itself;
   not S3 yet — documented deviation from TR-09). DDL `scripts/ddl_raw.sql`. *(1-month smoke first used
   `scripts/load_raw.py` → 1,549,263.)*
-- **Models (9, all built):** `stg_drug_event`, `stg_drug_ndc` (views) → `int_drug_resolution` (table; NDC join
+- **Models (10, all built):** `stg_drug_event`, `stg_drug_ndc` (views) → `int_drug_resolution` (table; NDC join
   rxcui→generic→brand→ingredient, exact-only, **ADR-005 written**; **84,039** signatures) → `dim_drug` (**4,368**;
-  drug_key −1 = Unknown), `dim_reaction` (**18,057**), `dim_reporter` (**726**), `dim_date` (**731**; 2023–2024
-  spine), `fct_report_drug_reaction` (**45,030,932**, clustered on receive_date; **4 conformed dims, all FK-tested**)
-  → `sem_signal_metrics` (view; PRR/ROR/ROR-CI/χ², thresholds as dbt `vars`, formulas only in
-  `macros/signal_metrics.sql` — TR-24). Macros: `normalize_drug_name`, `signal_metrics`.
-- **#7 tests: 36/36 pass** — key unique/not-null, FK `relationships` (fct → all 4 dims), `accepted_values`, row-count
+  drug_key −1 = Unknown), `dim_reaction` (**18,057**), `dim_reporter` (**726**), `dim_date` (**731**; data-derived
+  calendar, Airflow-ready), `fct_report_drug_reaction` (**45,030,932**, clustered on receive_date; **joins all 4 conformed dims → complete star lineage, all FK-tested**)
+  → `sem_signal_metrics` (all-time view) + **`fct_signal_metrics`** (monthly-grain table, **5,069,399**); both compute PRR/ROR/ROR-CI/χ²
+  via `macros/signal_metrics.sql` (formulas one place — TR-24), flags `is_signal` (TR-23) + `is_signal_strict` (adds ROR-CI > 1). Macros: `normalize_drug_name`, `signal_metrics`.
+- **#7 tests: 42/42 pass** — key unique/not-null, FK `relationships` (fct → all 4 dims), `accepted_values`, row-count
   plausibility, and the **PRR/ROR hand-computed worked example** (seed `signal_worked_example.csv` +
   `tests/assert_signal_worked_example.sql`, TR-38).
 - **Results (24 months):** report-row resolution **86.7%** (39,045,450 / 45,030,932; held vs smoke's 86.9%);
@@ -108,7 +108,7 @@ Rebuilt hands-on in a new **`.venv-dbt`** (keeps `.venv` clean); dbt project in 
   magnitude). Real signals recovered: **clozapine→neutropenia** (PRR 35.9, 5,571 cases, χ² 142,896),
   **Paxlovid→disease recurrence** (PRR 228), **opioid dependence** (oxycodone/acetaminophen PRR 370, tramadol
   PRR 61). *(1-month smoke: 32.3% distinct / 86.9% rows, 39,714 / 197,868 pairs.)* Lineage figure
-  `docs/assets/pipeline_lineage.svg`; walk-through `docs/Layer Explanation/dbt steps.md`.
+  `docs/assets/dbt-dag-refinement.png` (9-model complete star); walk-through `docs/Layer Explanation/dbt steps.md`.
 - **Reference "answer key":** verified copy of the whole build at **`dbt_reference/`** (read-only). The FULL
   24-month loader now lives in the project at **`scripts/load_to_snowflake.py`** (+ `scripts/ddl_raw.sql`).
 
@@ -119,11 +119,24 @@ Rebuilt hands-on in a new **`.venv-dbt`** (keeps `.venv` clean); dbt project in 
 3. ✅ Re-checked: report-row resolution **86.7%**, **315,270** signals / **1,240,645** pairs, clozapine→neutropenia PRR 35.9.
 
 ## TR §5 star schema ✅ (added `dim_reporter` + `dim_date`)
-- **`dim_reporter`** (**726**; grain = reporter qualification/type + `occur_country`; `reporter_key` = a
-  `generate_surrogate_key` hash shared with fct, so **no join, no NULL leaks**) and **`dim_date`** (**731**;
-  complete 2023–2024 `date_spine`; `date_key` = yyyymmdd = fct `receive_date_key`). fct now has **4 conformed
-  dims, each with not-null + FK `relationships` tests**; `reporter_type`/`occur_country` no longer degenerate,
+- **`dim_reporter`** (**726**; grain = reporter qualification/type + `occur_country`) and **`dim_date`** (**731**;
+  complete 2023–2024 `date_spine`; `date_key` = yyyymmdd). fct **joins all 4 dims** to fetch their keys —
+  `dim_reporter` via a NULL-safe `equal_null` join on the 3 natural cols, `dim_date` on `receive_date = full_date` —
+  each with **not-null + FK `relationships` tests**; `reporter_type`/`occur_country` no longer degenerate,
   `receive_date_key` a real FK. **9 models · 36/36 green.**
+- **Lineage refinement:** `reporter_key`/`receive_date_key` were first computed *inline* (surrogate hash /
+  `to_char`) — FK-valid but leaving `dim_reporter`/`dim_date` **unlinked in the DAG**; refactored fct to fetch
+  both via joins so the graph shows the **complete star** (keys identical, tests unchanged) —
+  `docs/assets/dbt-dag-refinement.png`.
+
+## dbt improvements ✅ (period metrics · ROR-CI · Airflow calendar)
+- **#1 Period-grain signals** — new `fct_signal_metrics` (table, one row per drug×reaction×**month**, **5,069,399**),
+  same metric macros; answers "strongest disproportionality **this period**" (TR §5.1). `sem_signal_metrics` stays all-time.
+  Tests: not-null `period_key`/`year`/`month` + unique grain `(drug_key, reaction_key, period_key)`.
+- **#2 ROR-CI condition** — `is_signal_strict` (= `is_signal` **and** `ror_ci_lower > signal_ror_ci_min` [1.0]) on **both**
+  signal models; `is_signal` unchanged (TR-23). Prunes weakly-supported flags: **0.85%** monthly vs **0.09%** all-time.
+- **#3 Airflow-ready `dim_date`** — calendar now **derived from the data** (distinct `receive_date`) instead of a hardcoded
+  `date_spine`; a future scheduled load auto-extends it (same 731 rows today). fct→dim_date FK re-verified.
 
 ## NEXT
 - pytest TR-37 (normalisation) / TR-38 (metrics) — dbt covers TR-38 in-warehouse; Python copies in `dbt_reference/tests/`.
