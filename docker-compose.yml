@@ -21,6 +21,7 @@ services:
       - "8888:8888"
     volumes:
       - ./notebooks:/home/jovyan/work                    # notebooks live in the repo (version-controlled)
+      - ./scripts:/home/jovyan/scripts                   # production Spark jobs in the repo (version-controlled)
       - ${DATA_DIR}:/home/jovyan/data:ro                 # bronze data, READ-ONLY (DATA_DIR from .env)
       - ${DATA_DIR}/silver:/home/jovyan/silver           # Silver Parquet output, writable
       - ${DATA_DIR}/quarantine:/home/jovyan/quarantine   # rejected rows (#6), writable
@@ -30,3 +31,21 @@ services:
       - JUPYTER_ENABLE_LAB=yes
       - SPARK_LOCAL_DIRS=/opt/spark-tmp                  # route ALL Spark shuffle/spill to the D: mount
     command: ["start-notebook.sh", "--NotebookApp.token=''", "--NotebookApp.password=''", "--NotebookApp.password_required=False"]
+    
+  # dbt runs in its own container so its dependencies never collide with Airflow's.
+  # (dbt-core 1.12 needs click>=8.3 / cryptography>=46 / protobuf>=6 — all above
+  #  apache-airflow 2.10.5's pins; sharing one interpreter crash-loops the celery worker.)
+  # Idle until Airflow execs a dbt command into it, same pattern as spark-jupyter.
+  dbt:
+    build:
+      context: .
+      dockerfile: dbt.Dockerfile
+    container_name: capstone-dbt
+    working_dir: /dbt
+    volumes:
+      - ./de_capstone:/dbt                               # the dbt project (models, profiles.yml, seeds)
+    environment:
+      - SNOWFLAKE_ACCOUNT=${SNOWFLAKE_ACCOUNT}           # from the repo-root .env, same as profiles.yml uses
+      - SNOWFLAKE_USER=${SNOWFLAKE_USER}
+      - SNOWFLAKE_PASSWORD=${SNOWFLAKE_PASSWORD}
+    entrypoint: ["sleep", "infinity"]                    # stays alive so Airflow can exec into it
