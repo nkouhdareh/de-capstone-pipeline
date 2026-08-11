@@ -1,7 +1,7 @@
 # Project Progress & Handoff
 
 *A running snapshot of where the project is, so a fresh session (or a teammate) can pick up fast.*
-**Status as of:** Silver done (Week 2 — 45,030,932 clean rows). **Week 3: dbt on Snowflake — 24 months + full TR §5 star schema + 3 improvements ✅** — **10 models · 42/42 dbt tests** green (4 conformed dims all FK-tested; period-grain signals; ROR-CI strict flag; Airflow-ready calendar); real signals recovered (clozapine→neutropenia PRR 35.9, Paxlovid rebound PRR 228, opioid dependence). **NEXT: pytest TR-37/38, S3 external stage (TR-09), then Airflow + Streamlit** — procedure in `runbook.md` → "Week 3 — dbt on Snowflake".
+**Status as of:** Silver done (Week 2 — 45,030,932 clean rows). **Week 3: dbt on Snowflake — 24 months + full TR §5 star schema + 3 improvements ✅** — **10 models · 42/42 dbt tests** green (4 conformed dims all FK-tested; period-grain signals; ROR-CI strict flag; Airflow-ready calendar); real signals recovered (clozapine→neutropenia PRR 35.9, Paxlovid rebound PRR 228, opioid dependence). **Week 4: Airflow orchestration — built & smoke-passed ✅** — 3 Docker stacks (Airflow 2.10.5 · PySpark · dbt), DAG `pv_pipeline`, one-month smoke **1,549,263 rows** end-to-end to S3 with production untouched; scratch rehearsal proved the S3→Snowflake path returns **exactly the same rows** as the validated internal-stage path (`MINUS` = 0). **NEXT: full 24-month run → production cutover (`TRUNCATE` mandatory) → dbt in the chain → Streamlit.**
 
 ---
 
@@ -158,21 +158,77 @@ Snowflake region via `CURRENT_REGION()`). Secure **storage integration** (no key
   `docker-compose.yml` gained `./scripts:/home/jovyan/scripts`. Production `silver/drug_event` (45M) untouched.
 - **Correct run** (Git Bash; the plain `python …` form fails — no pyspark): `MSYS_NO_PATHCONV=1 docker exec -e SILVER_OUT=… -e QUAR_OUT=… -e SILVER_METRICS=… capstone-spark-jupyter /usr/local/spark/bin/spark-submit --driver-memory 4g /home/jovyan/scripts/build_silver.py --months 2023-01`. **Key fix:** `spark-submit` needs `--driver-memory 4g` explicitly (it ignores the in-code driver memory → earlier OOM/137).
 - **Next — Airflow** (Spark stays in its container; Airflow triggers it via `docker exec`): `airflow/.env` → `airflow/docker-compose.yaml` → `airflow/dags/pv_pipeline.py` → one-month DAG smoke (safe half `ingest→build_silver→upload_s3`) → cutover (`load_raw→dbt`) → full 24-month → Streamlit. Full plan: `docs/Layer Explanation/Airflow.md`.
+- **`persist()` added** to the per-month loop and re-tested — same 1,549,263. The transformations are still identical to the notebook; only the **execution plan** is optimised (no recompute between `count` and `write`).
+
+## Airflow orchestration (Week 4) — built, one-month smoke PASSED ✅
+**Architecture — three Docker stacks; Airflow orchestrates, it does not host the tools.** The Airflow
+stack (`airflow/docker-compose.yaml`, **pinned 2.10.5**: `stable` now serves Airflow 3.x, whose operator
+import paths moved) triggers **`capstone-spark-jupyter`** and **`capstone-dbt`** over a mounted
+`/var/run/docker.sock`. Credentials live in git-ignored `airflow/.env`; the compose file passes them
+into the containers explicitly (a Compose `.env` only does variable interpolation).
+
+- **DAG `airflow/dags/pv_pipeline.py`** — `ingest_ndc >> ingest_faers >> build_silver >> upload_s3`.
+  `build_silver` and `run_dbt` share one `_exec_in_container()` helper that streams the child container's
+  output into the task log and **raises on a non-zero exit** (so a Spark OOM fails the task instead of
+  passing silently). A `BashOperator` running `docker exec` cannot work — there is **no docker CLI** in
+  the Airflow image; the Python Docker SDK talks to the same socket.
+- **Ingest tasks are guarded** (skip when Bronze is present) — Bronze is immutable, and an unconditional
+  re-run would rewrite it over 30–60 minutes.
+- **Writes only non-production paths:** Spark → `silver/pipeline`, upload → S3 `silver_pipeline/`.
+  Production `silver/drug_event` (45M) and the validated 486-file S3 prefix are never written.
+- **AWS identity (new):** IAM **user** `de-capstone-airflow-uploader` with least-privilege write
+  (`PutObject` + multipart + scoped `ListBucket`; **no `DeleteObject`, no `GetObject`**). IAM *roles*
+  cannot have access keys, and the Snowflake storage-integration role is read-only — so the uploader is a
+  separate identity. Adding an S3 prefix means editing **two** policies: the writer and Snowflake's reader.
+- **dbt runs in its own container** (`dbt.Dockerfile`, **dbt-snowflake pinned 1.12.0** to match `.venv-dbt`).
+  Installing dbt into the Airflow image via `_PIP_ADDITIONAL_REQUIREMENTS` **crash-loops the celery worker**:
+  dbt-core 1.12 needs `click>=8.3` / `cryptography>=46` / `protobuf>=6`, all above Airflow 2.10.5's pins,
+  and the variable installs with no constraint file.
+- **New Snowflake objects (additive):** `RAW.SILVER_PIPELINE_S3_STAGE` over `silver_pipeline/`, and the
+  storage integration's allowed locations extended by `ALTER` (which does **not** rotate the external id,
+  so no trust-policy rework). The internal stages, `SILVER_S3_STAGE`, `NDC_S3_STAGE` and
+  `scripts/load_to_snowflake.py` are **untouched** — still the rollback path.
+
+**Validated:**
+| Check | Result |
+|---|---|
+| One-month DAG smoke (`{"months":"2023-01"}`) | all 4 tasks green; **1,549,263** rows; 13 parquet / 135,463,430 bytes in S3 |
+| `dbt_test` driven by Airflow | **42/42** |
+| Scratch rehearsal (1 month, temp table) | **1,549,263** = production's 1,549,263, and `MINUS` on the grain key = **0** → the S3 path yields *exactly the same rows*, not merely the same count |
+| Production S3 prefix | `silver/drug_event/` **486 objects / 3,913,635,942 bytes — unchanged** |
+| Snowflake RAW | **untouched** (cutover tasks not in the chain) |
+
+**Two incidents, both in `runbook.md` §4:** (1) Spark `java.io.IOException: Cannot allocate memory` —
+**native**, not heap: the six Airflow containers plus a 4 GB driver exceeded Docker's default ceiling
+(50% of host RAM); fixed with `.wslconfig` `memory=10GB`, `--master local[4]` and disabling spill
+read-ahead. (2) the worker crash loop above. Full phase guide (local only, folder git-ignored):
+`docs/Layer Explanation/Airflow.md` — Part E has the current file contents and how to operate it.
+
+**⚠️ Cutover hazard:** `RAW.SILVER_DRUG_EVENT` already holds 45,030,932 rows and Snowflake tracks load
+metadata **per file path**, so a `COPY` from the S3 stage would **append a second full copy (~90M rows)**.
+The cutover must `TRUNCATE` first, after a full-scale scratch comparison.
 
 ## NEXT
-- **Immediate next: Airflow orchestration** (capstone-required) — S3 external stage is configured & validated (above); production not yet cut over. Streamlit after Airflow works.
+- **Full 24-month DAG run** (`{"months":"all"}`) → Silver **45,030,932**, then the **production cutover**:
+  scratch-load and compare at full scale → `TRUNCATE` + `COPY` into RAW → wire `dbt_build`/`dbt_test`
+  into the chain (`fct` **45,030,932**, **42/42**). Internal stages stay as the rollback until it passes.
+- **Streamlit** after the cutover.
 - pytest TR-37 (normalisation) / TR-38 (metrics) — dbt covers TR-38 in-warehouse; Python copies in `dbt_reference/tests/`.
-- S3 external stage (TR-09; internal stage now — documented deviation), then Airflow + Streamlit.
 
 ## How to run (quick)
 - **Explore:** `docker compose up` → http://localhost:8888 → `work/01_explore_drug_event.ipynb`. First cache JSON→Parquet (`/home/jovyan/dq_cache`) for speed. Full detail + failure fixes in `runbook.md`.
 - **Silver:** `docker compose up` (recreates for the new writable mounts) → `work/02_build_silver_drug_event.ipynb` → Run All. Writes `silver/` + `quarantine/` Parquet. Detail in `runbook.md` §2.
 - **Ingestion:** see `runbook.md` §2.
+- **Airflow:** `docker compose up -d` in the repo root (Spark + dbt containers), then in `airflow/`
+  → UI http://localhost:8080 (`airflow`/`airflow`). Trigger with config `{"months":"2023-01"}` or
+  `{"months":"all"}`. Stop with `docker compose stop` — **never `down -v`**, which deletes Airflow's
+  metadata DB (login, DAG history).
 
 ## Board issues (github.com/nkouhdareh/de-capstone-pipeline)
 - **Done:** #1 repo/env, #2 first API call, #3 bronze ingestion, #8 ADR-001, **#4 dedup · #5 normalisation · #6 validation/quarantine** (Silver built & verified)
 - **Done (Week 3):** dbt on Snowflake — staging → `int_drug_resolution` → **full TR §5 star schema (4 conformed dims)** → `sem_signal_metrics`, **#7 tests 36/36**, **scaled to all 24 months (45,030,932 rows)**.
-- **Next:** pytest TR-37/38; S3 external stage (TR-09); Airflow; Streamlit.
+- **Done (Week 4):** Airflow orchestration — 3 Docker stacks, DAG `pv_pipeline`, one-month smoke **1,549,263** end-to-end to S3, `dbt_test` **42/42** through Airflow, scratch rehearsal `MINUS` = 0; production untouched.
+- **Next:** full 24-month run + production cutover; Streamlit; pytest TR-37/38.
 
 ## Rules / reminders
 - **Data never in git** (lives on D: drive). Secrets in `.env` only.
