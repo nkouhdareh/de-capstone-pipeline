@@ -138,7 +138,29 @@ Rebuilt hands-on in a new **`.venv-dbt`** (keeps `.venv` clean); dbt project in 
 - **#3 Airflow-ready `dim_date`** — calendar now **derived from the data** (distinct `receive_date`) instead of a hardcoded
   `date_spine`; a future scheduled load auto-extends it (same 731 rows today). fct→dim_date FK re-verified.
 
+## S3 external stage (TR-09) — configured & validated ✅ (not cut over)
+Snowflake external stages set up against a **private S3 bucket in `eu-central-1`** (verified to match the
+Snowflake region via `CURRENT_REGION()`). Secure **storage integration** (no keys stored in Snowflake);
+**least-privilege IAM** allowing read-only on only the `silver/` and `ndc/` prefixes; bucket **private + AES256
+(SSE-S3) encrypted**, Block Public Access on. Validated **non-destructively**: `LIST` +
+`SYSTEM$VALIDATE_STORAGE_INTEGRATION` passed, and scratch-table loads — **Silver 121,279 rows / 0 errors**,
+**NDC 136,520 rows / 0 errors**.
+**Not changed / not done:** the internal stages (`SILVER_STAGE`/`NDC_STAGE`) and the current loader
+(`scripts/load_to_snowflake.py`) are **untouched** — production RAW is still loaded via the internal stages;
+**no cutover** to S3 external stages yet, and **no cleanup** performed. Full guide:
+`docs/Layer Explanation/S3 external-stage guide.md`.
+
+## Silver job + Airflow phase — job converted & smoke-validated ✅ (Airflow next)
+- **Silver notebook → `scripts/build_silver.py`** — headless, parameterized (`--months 2023-01 | all`), idempotent
+  (dynamic partition overwrite); **transformations byte-identical** to `notebooks/02_build_silver_drug_event.ipynb`
+  (kept as reference, untouched). Requires `SILVER_OUT`/`QUAR_OUT`/`SILVER_METRICS` env (no default → can't hit production).
+- **Smoke-validated (2023-01):** **1,549,263** Silver rows, exit 0, 13 parquet files — matches the notebook.
+  `docker-compose.yml` gained `./scripts:/home/jovyan/scripts`. Production `silver/drug_event` (45M) untouched.
+- **Correct run** (Git Bash; the plain `python …` form fails — no pyspark): `MSYS_NO_PATHCONV=1 docker exec -e SILVER_OUT=… -e QUAR_OUT=… -e SILVER_METRICS=… capstone-spark-jupyter /usr/local/spark/bin/spark-submit --driver-memory 4g /home/jovyan/scripts/build_silver.py --months 2023-01`. **Key fix:** `spark-submit` needs `--driver-memory 4g` explicitly (it ignores the in-code driver memory → earlier OOM/137).
+- **Next — Airflow** (Spark stays in its container; Airflow triggers it via `docker exec`): `airflow/.env` → `airflow/docker-compose.yaml` → `airflow/dags/pv_pipeline.py` → one-month DAG smoke (safe half `ingest→build_silver→upload_s3`) → cutover (`load_raw→dbt`) → full 24-month → Streamlit. Full plan: `docs/Layer Explanation/Airflow.md`.
+
 ## NEXT
+- **Immediate next: Airflow orchestration** (capstone-required) — S3 external stage is configured & validated (above); production not yet cut over. Streamlit after Airflow works.
 - pytest TR-37 (normalisation) / TR-38 (metrics) — dbt covers TR-38 in-warehouse; Python copies in `dbt_reference/tests/`.
 - S3 external stage (TR-09; internal stage now — documented deviation), then Airflow + Streamlit.
 
