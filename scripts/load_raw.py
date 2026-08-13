@@ -1,11 +1,22 @@
 import os
+import sys
 import snowflake.connector
+from cryptography.hazmat.primitives import serialization
 
-# connect using the 3 env vars from Step 2 (no secrets written in this file)
+# Key-pair auth (Snowflake deprecated password-only sign-ins 2026-08-18).
+# Env vars only; the key file lives outside the repo.
+_key_path = os.environ["SNOWFLAKE_PRIVATE_KEY_PATH"]
+with open(_key_path, "rb") as _f:
+    _private_key = serialization.load_pem_private_key(_f.read(), password=None).private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
 conn = snowflake.connector.connect(
     account=os.environ["SNOWFLAKE_ACCOUNT"],
     user=os.environ["SNOWFLAKE_USER"],
-    password=os.environ["SNOWFLAKE_PASSWORD"],
+    private_key=_private_key,
     role="DE_CAPSTONE_DBT_ROLE", warehouse="DE_CAPSTONE_WH",
     database="DE_CAPSTONE", schema="RAW",
 )

@@ -43,9 +43,10 @@ services:
     container_name: capstone-dbt
     working_dir: /dbt
     volumes:
-      - ./de_capstone:/dbt                               # the dbt project (models, profiles.yml, seeds)
+      - ./de_capstone:/dbt
+      - D:/capstone/.keys:/keys:ro                       # private key, read-only, outside the repo
     environment:
-      - SNOWFLAKE_ACCOUNT=${SNOWFLAKE_ACCOUNT}           # from the repo-root .env, same as profiles.yml uses
+      - SNOWFLAKE_ACCOUNT=${SNOWFLAKE_ACCOUNT}
       - SNOWFLAKE_USER=${SNOWFLAKE_USER}
-      - SNOWFLAKE_PASSWORD=${SNOWFLAKE_PASSWORD}
-    entrypoint: ["sleep", "infinity"]                    # stays alive so Airflow can exec into it
+      - SNOWFLAKE_PRIVATE_KEY_PATH=/keys/rsa_key.p8      # hardcoded: the container's own path
+    entrypoint: ["sleep", "infinity"]

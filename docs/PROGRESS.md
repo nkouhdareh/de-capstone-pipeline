@@ -1,7 +1,7 @@
 # Project Progress & Handoff
 
 *A running snapshot of where the project is, so a fresh session (or a teammate) can pick up fast.*
-**Status as of:** Silver done (Week 2 — 45,030,932 clean rows). **Week 3: dbt on Snowflake — 24 months + full TR §5 star schema + 3 improvements ✅** — **10 models · 42/42 dbt tests** green (4 conformed dims all FK-tested; period-grain signals; ROR-CI strict flag; Airflow-ready calendar); real signals recovered (clozapine→neutropenia PRR 35.9, Paxlovid rebound PRR 228, opioid dependence). **Week 4: Airflow orchestration + S3 cutover ✅ COMPLETE** — 3 Docker stacks (Airflow 2.10.5 · PySpark · dbt); full **24-month run through Airflow = 45,030,932 rows** (5 h); **production RAW now loaded from S3**; **clozapine→neutropenia PRR 35.94 unchanged after the cutover** (same inputs, same maths, same answer, different infrastructure); and **one trigger now runs the entire pipeline** — 8 tasks green in 21 min, `dbt_build` PASS=53, `dbt_test` PASS=42. **NEXT: Streamlit — the only remaining MVP item.**
+**Status as of:** Silver done (Week 2 — 45,030,932 clean rows). **Week 3: dbt on Snowflake — 24 months + full TR §5 star schema + 3 improvements ✅** — **10 models · 42/42 dbt tests** green (4 conformed dims all FK-tested; period-grain signals; ROR-CI strict flag; Airflow-ready calendar); real signals recovered (clozapine→neutropenia PRR 35.9, Paxlovid rebound PRR 228, opioid dependence). **Week 4: Airflow orchestration + S3 cutover + Snowflake key-pair auth ✅ COMPLETE** — 3 Docker stacks (Airflow 2.10.5 · PySpark · dbt); full **24-month run through Airflow = 45,030,932 rows** (5 h); **production RAW now loaded from S3**; **clozapine→neutropenia PRR 35.94 unchanged after the cutover** (same inputs, same maths, same answer, different infrastructure); and **one trigger now runs the entire pipeline** — 8 tasks green in 21 min, `dbt_build` PASS=53, `dbt_test` PASS=42. **NEXT: Streamlit — the only remaining MVP item.**
 
 ---
 
@@ -271,9 +271,39 @@ answers the "should I fuzzy-match the drug-name tail?" question: the top signals
 `dbt_build` → **PASS=53 WARN=0 ERROR=0** · `dbt_test` → **PASS=42 WARN=0 ERROR=0** ·
 `publish_metrics` → `fct_report_drug_reaction rows: 45030932`, `signals (is_signal): 315270`.
 
+## Snowflake key-pair authentication ✅ (2026-08-13)
+Snowflake deprecates **password-only sign-ins on 18 Aug 2026**, which would have broken `load_raw`,
+`dbt_build`, `dbt_test` and `publish_metrics`. Migrated ahead of the deadline — and used it to separate
+the human identity from the machine one:
+
+| Identity | Purpose | Auth |
+|---|---|---|
+| `NKOUH` | Snowsight UI, administration | password + **TOTP MFA** |
+| **`DE_CAPSTONE_SVC`** (new) | dbt, Airflow, both loaders | **key-pair only** — `TYPE = SERVICE` users cannot have a password |
+
+Before this, the pipeline authenticated as a user whose default role was `ACCOUNTADMIN`. It now runs as
+a service identity limited to `DE_CAPSTONE_DBT_ROLE`, with a 2048-bit RSA key held **outside the repo**
+(`D:/capstone/.keys/`) and mounted read-only into the dbt container. `profiles.yml` reads
+`SNOWFLAKE_PRIVATE_KEY_PATH` from the environment, so one profile serves both the container
+(`/keys/rsa_key.p8`) and the host `.venv-dbt` (`D:/…`). Both loaders — including
+`scripts/load_to_snowflake.py`, the documented rollback — were migrated too: a rollback is only worth
+claiming if it still runs.
+
+**Small blast radius, by earlier accident:** because `load_raw` runs through the dbt container rather
+than `snowflake.connector` in the Airflow worker, the Snowflake credential existed in exactly one place.
+A decision taken for dependency reasons turned out to be a security property.
+
+**Verified:** `dbt debug` in-container and on the host · rollback loader connects as
+`('DE_CAPSTONE_SVC', 'DE_CAPSTONE_DBT_ROLE', 'DE_CAPSTONE_WH')` · `grep` for `SNOWFLAKE_PASSWORD` finds
+**no hits in live code** · **full DAG run `success` in 14 m 36 s, 8 tasks green**.
+**There is no Snowflake password anywhere in the project.** Full procedure:
+`docs/Layer Explanation/Airflow.md` Part F.
+
 ## NEXT
 - **Streamlit — the only remaining MVP item.** Everything upstream of the dashboard is built, run at
   full scale, and verified end-to-end under orchestration.
+- *Small:* add a second MFA method to `NKOUH` (only user, only `ACCOUNTADMIN` — a lost phone means
+  Snowflake support).
 - *Optional:* trim `build_silver`'s log volume (it forwards every Spark INFO line — invaluable for a
   10-minute job, unwieldy for a 5-hour one); a scheduled rather than manual trigger (`dim_date` already
   auto-extends for this); CI.

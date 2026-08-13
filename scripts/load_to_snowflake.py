@@ -2,7 +2,9 @@
 """Load local Silver Parquet + NDC NDJSON into Snowflake RAW via internal stages.
 
 Credentials come from environment variables ONLY (never printed, never committed):
-    SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PASSWORD
+    SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PRIVATE_KEY_PATH
+Key-pair authentication: Snowflake deprecated password-only sign-ins (2026-08-18),
+so this connects with the same RSA key dbt uses. The key file never enters the repo.
 Non-secret connection settings are fixed to the capstone objects:
     role DE_CAPSTONE_DBT_ROLE / warehouse DE_CAPSTONE_WH / database DE_CAPSTONE / schema RAW
 
@@ -29,6 +31,7 @@ except Exception:
     pass
 
 import snowflake.connector
+from cryptography.hazmat.primitives import serialization
 
 HERE = Path(__file__).resolve().parent
 DDL_FILE = HERE / "ddl_raw.sql"
@@ -36,11 +39,25 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", "D:/capstone/data"))
 SILVER_DIR = DATA_DIR / "silver" / "drug_event"
 NDC_FILE = DATA_DIR / "bronze" / "drug_ndc" / "part-0000.json"
 
-REQUIRED = ("SNOWFLAKE_ACCOUNT", "SNOWFLAKE_USER", "SNOWFLAKE_PASSWORD")
+REQUIRED = ("SNOWFLAKE_ACCOUNT", "SNOWFLAKE_USER", "SNOWFLAKE_PRIVATE_KEY_PATH")
 
 
 def log(msg: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def load_private_key() -> bytes:
+    """Read the PKCS#8 private key and return it as DER, which the connector wants."""
+    key_path = Path(os.environ["SNOWFLAKE_PRIVATE_KEY_PATH"])
+    if not key_path.is_file():
+        sys.exit(f"ERROR: private key not found at {key_path}")
+    with key_path.open("rb") as handle:
+        private_key = serialization.load_pem_private_key(handle.read(), password=None)
+    return private_key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
 
 
 def connect():
@@ -49,16 +66,16 @@ def connect():
         sys.exit(
             "ERROR: missing environment variable(s): "
             + ", ".join(missing)
-            + "\nSet them in your shell (values are never read from chat), e.g. PowerShell:\n"
-            + '  setx SNOWFLAKE_ACCOUNT "<account_locator>"\n'
-            + '  setx SNOWFLAKE_USER "<user>"\n'
-            + '  setx SNOWFLAKE_PASSWORD "<password>"\n'
-            + "then open a NEW shell so the values are inherited."
+            + "\nSet them in your shell (values are never read from chat), e.g.:\n"
+            + '  SNOWFLAKE_ACCOUNT="<account_locator>"\n'
+            + '  SNOWFLAKE_USER="<service_user>"\n'
+            + '  SNOWFLAKE_PRIVATE_KEY_PATH="D:/capstone/.keys/rsa_key.p8"\n'
+            + "or put them in the repo-root .env, which this script loads."
         )
     return snowflake.connector.connect(
         account=os.environ["SNOWFLAKE_ACCOUNT"],
         user=os.environ["SNOWFLAKE_USER"],
-        password=os.environ["SNOWFLAKE_PASSWORD"],
+        private_key=load_private_key(),
         role="DE_CAPSTONE_DBT_ROLE",
         warehouse="DE_CAPSTONE_WH",
         database="DE_CAPSTONE",
