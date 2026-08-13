@@ -235,6 +235,135 @@ docker compose up -d
 Bronze is never written: it is reachable only through the read-only mount, while Silver and
 Quarantine are separate writable mounts pointing at sibling folders.
 
+### Run the whole pipeline with Airflow
+
+Three Docker stacks: **Airflow** orchestrates, **`capstone-spark-jupyter`** does the Spark work,
+**`capstone-dbt`** talks to Snowflake. Airflow triggers the other two over the mounted Docker socket —
+it never runs Spark or dbt itself.
+
+**Start everything** (both compose files — the Airflow stack does *not* start the other two):
+
+```bash
+cd /d/capstone/de-capstone && docker compose up -d
+```
+
+```bash
+cd /d/capstone/de-capstone/airflow && docker compose up -d
+```
+
+Wait 1–2 min (each Airflow container pip-installs on start), then confirm **8 containers**:
+
+```bash
+docker ps --format "table {{.Names}}\t{{.Status}}"
+```
+
+UI: **http://localhost:8080**, login `airflow` / `airflow` (not an OS user).
+
+**Trigger a run:**
+
+```bash
+cd /d/capstone/de-capstone/airflow && docker compose exec airflow-scheduler airflow dags trigger pv_pipeline -c '{"months":"2023-01"}'
+```
+
+`{"months":"all"}` rebuilds all 24 months (~5 h). **One month still exercises the whole chain**: dynamic
+partition overwrite rewrites only January locally, the other 23 stay on disk, `sync --delete` removes
+nothing, S3 keeps all 486 files, and `load_raw` still loads the full 45,030,932. ~15–21 min.
+
+**Chain:** `ingest_ndc → ingest_faers → build_silver → upload_s3 → load_raw → dbt_build → dbt_test → publish_metrics`
+
+**Run a single task** (no DAG run, no dependencies) — useful for `upload_s3` (re-upload without Spark)
+and `dbt_test` (read-only):
+
+```bash
+cd /d/capstone/de-capstone/airflow && MSYS_NO_PATHCONV=1 docker compose exec airflow-scheduler airflow tasks test pv_pipeline dbt_test 2026-08-13
+```
+
+**Check progress without the UI** (the Grid view can hang on the huge `build_silver` log):
+
+```bash
+cd /d/capstone/de-capstone/airflow && MSYS_NO_PATHCONV=1 docker compose exec airflow-scheduler airflow dags list-runs -d pv_pipeline
+```
+
+```bash
+MSYS_NO_PATHCONV=1 docker exec capstone-spark-jupyter sh -c 'ls -d /home/jovyan/silver/pipeline/receive_year=*/receive_month=* | wc -l'
+```
+
+**Expected gates:** `build_silver` → `Requested-month Silver rows: 1549263` (one month) or `45030932`
+(all) · `load_raw` → `RAW.SILVER_DRUG_EVENT rows: 45030932`, `RAW.DRUG_NDC rows: 136520` ·
+`dbt_build` → `PASS=53` · `dbt_test` → `PASS=42` · `publish_metrics` → `fct… 45030932`, `signals… 315270`.
+
+**dbt directly** (bypassing Airflow):
+
+```bash
+MSYS_NO_PATHCONV=1 docker exec capstone-dbt dbt build --profiles-dir /dbt
+MSYS_NO_PATHCONV=1 docker exec capstone-dbt dbt run-operation publish_metrics --profiles-dir /dbt
+```
+
+**dbt lineage docs** — from the host `.venv-dbt`, **on port 8081** (Airflow owns 8080):
+
+```bash
+cd /d/capstone/de-capstone && set -a; source .env; set +a && cd de_capstone && /d/capstone/de-capstone/.venv-dbt/Scripts/dbt.exe docs generate && /d/capstone/de-capstone/.venv-dbt/Scripts/dbt.exe docs serve --port 8081
+```
+
+**Stop:**
+
+```bash
+cd /d/capstone/de-capstone/airflow && docker compose stop
+```
+
+```bash
+cd /d/capstone/de-capstone && docker compose stop
+```
+
+⚠️ **Never `docker compose down -v` on the Airflow stack** — it deletes `postgres-db-volume`, i.e.
+Airflow's metadata DB: your login, DAG history and run records.
+
+**While a long run is in progress:** editing docs, Zoom, and read-only Docker commands are all safe (the
+WSL VM has a hard memory reservation, so Windows apps cannot starve Spark). Do **not**
+`docker compose up/down/stop/restart`, `wsl --shutdown`, let the laptop sleep, start Jupyter or another
+Spark job, or edit `pv_pipeline.py` (`upload_s3` is parsed when *it* starts).
+
+**Ports:** Jupyter `8888` · Airflow `8080` · dbt docs `8081` (default 8080 clashes with Airflow) ·
+Streamlit `8501`. Snowflake is **not** localhost — it's `app.snowflake.com`.
+
+### Serve the dashboard (Streamlit)
+
+The dashboard is **not** part of the orchestrated pipeline — it reads the finished dbt marts in
+`DE_CAPSTONE.DBT_DEV` and computes nothing. It has its own venv (`.venv-app`) so Streamlit's
+dependencies never touch `.venv-dbt`.
+
+```bash
+cd /d/capstone/de-capstone && .venv-app/Scripts/streamlit.exe run app/dashboard.py --server.port 8501
+```
+
+Then http://localhost:8501. First launch asks for an email in the terminal — press Enter to skip.
+Call the exe by path rather than activating the venv (Git Bash activation can leave `python` on the
+system interpreter — the same reason the dbt commands use `.venv-dbt/Scripts/`).
+
+**One-time setup:**
+
+```bash
+python -m venv .venv-app
+```
+
+```bash
+.venv-app/Scripts/python.exe -m pip install streamlit snowflake-connector-python python-dotenv
+```
+
+**Files:** `app/db.py` (key-pair connection as `DE_CAPSTONE_SVC`, reading `SNOWFLAKE_ACCOUNT` /
+`SNOWFLAKE_USER` / `SNOWFLAKE_PRIVATE_KEY_PATH` from the repo `.env`) and `app/dashboard.py` (the UI).
+`app/db.py` run directly is a self-test: it prints the connected identity and the known clozapine signal.
+
+```bash
+.venv-app/Scripts/python.exe app/db.py
+```
+
+**Expected gates:** `('DE_CAPSTONE_SVC', 'DE_CAPSTONE_DBT_ROLE', 'DE_CAPSTONE_WH')` ·
+`CLOZAPINE / Neutropenia / 5571 / PRR 35.94` · all-time query ~3.7 s against the
+`sem_signal_metrics` **view** (fast enough that no materialisation was needed).
+In the UI, `CLOZAPINE` + `Neutropenia` must show **24 months** and **5,571 cases across months** —
+each case has one `receive_date`, so the monthly counts must sum to the all-time count.
+
 ---
 
 ## 3. Monitoring
@@ -319,6 +448,8 @@ validate the transform before the full run.)*
 | `build_silver` fails after ~1 second with `docker.errors.APIError: 409 … container is not running` | Airflow **triggers** Spark rather than hosting it, so `capstone-spark-jupyter` must already be running. Easy to miss after a restart, because starting the Airflow stack does not start the repo stack | `docker compose up -d` from the repo root, then `docker ps` — expect **8** containers (6 Airflow + spark-jupyter + dbt) before triggering. Then re-trigger, or clear the failed task in the UI to resume the existing run | Yes |
 | Snowflake auth fails: `Could not deserialize key data` / `JWT token is invalid` / `No such file or directory: /keys/rsa_key.p8` | Key-pair problems, in order: the `.p8` is not PKCS#8; the registered public key doesn't match the private key (or wrong user); the key mount isn't applied | Regenerate with `openssl pkcs8 -topk8 … -nocrypt`; check `DESC USER DE_CAPSTONE_SVC` → `RSA_PUBLIC_KEY_FP`; `docker compose up -d --force-recreate dbt` (a plain restart does not add a new mount) | Yes |
 | Only `airflow-worker` crash-loops after adding dbt to `_PIP_ADDITIONAL_REQUIREMENTS` — `RestartCount` climbing, `health` stuck at `starting`, **no traceback**, log ends at `BACKEND=redis` | `dbt-core` 1.12 requires `click>=8.3` / `cryptography>=46` / `protobuf>=6`, all above apache-airflow 2.10.5's pins; the variable installs with **no constraint file** and silently upgrades Airflow's own dependencies. Scheduler/webserver survive because `celery worker` imports a wider surface | Remove the dbt packages from the pip line, then `docker compose up -d --force-recreate airflow-worker` — a plain restart keeps the bad `/home/airflow/.local`. Run dbt in its own container (`capstone-dbt`, `dbt.Dockerfile`) and have Airflow exec into it, same pattern as Spark. **Diagnosis tip:** `{{.State.ExitCode}}` is meaningless while a container runs — sample `{{.RestartCount}}` twice, 60 s apart | Yes |
+| Streamlit's ranked table is topped by rows with **blank PRR / ROR** | The reaction was reported *only* with that drug, so `c = 0`: `metric_prr` divides by `nullif(c/(c+d), 0)` and returns NULL — undefined, not infinite. Snowflake sorts **NULLs first** under `ORDER BY … DESC`, so undefined pairs head a list meant to rank by magnitude | `order by <col> desc nulls last` in `build_signal_query` / `build_period_query`. The dbt side was already correct — `coalesce(…, false)` keeps `is_signal` FALSE | Yes |
+| The monthly table is empty while the all-time table has rows | The all-time case floor (default **100**) was applied at monthly grain, where a typical `a` is single digits | Use the separate **"Minimum cases (a) - monthly"** input (default 5). Two different floors for two different grains is deliberate, not a duplicate control | Yes |
 
 ---
 
