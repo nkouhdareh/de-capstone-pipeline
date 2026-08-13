@@ -155,6 +155,7 @@ with DAG(
         bash_command=(
             f"aws s3 sync {SILVER_OUT_LOCAL}/ "
             f"s3://$PV_S3_BUCKET/{S3_SILVER_PREFIX}/ "
+            "--delete "
             "--exclude '*' --include '*.parquet' "
             "--exclude '*_temporary*' --exclude '*.spark-staging*'"
         ),
@@ -162,6 +163,15 @@ with DAG(
 
     # ---- PRODUCTION-CUTOVER TASKS — commented out for the one-month smoke ----
     # load_raw   = PythonOperator(task_id="load_raw_s3", python_callable=load_raw_s3)
+    # Reloads RAW from the S3 external stages via a dbt macro, so the Snowflake
+    # connection and credentials live in one place (the dbt container) rather than
+    # being duplicated into Airflow's Python environment.
+    load_raw = PythonOperator(
+        task_id="load_raw",
+        python_callable=run_dbt,
+        op_kwargs={"dbt_command": ["run-operation", "load_raw_from_s3"]},
+        execution_timeout=timedelta(hours=1),
+    )    
     dbt_build = PythonOperator(
         task_id="dbt_build",
         python_callable=run_dbt,
@@ -176,9 +186,15 @@ with DAG(
         execution_timeout=timedelta(hours=1),
     )
     # metrics    = PythonOperator(task_id="publish_metrics", python_callable=publish_metrics)
+    metrics = PythonOperator(
+        task_id="publish_metrics",
+        python_callable=run_dbt,
+        op_kwargs={"dbt_command": ["run-operation", "publish_metrics"]},
+        execution_timeout=timedelta(minutes=30),
+    )
 
-    # Safe smoke chain:
-    ingest_ndc >> ingest_faers >> build_silver >> upload_s3
+    # Safe chain (used through the incremental build-out):
+    # ingest_ndc >> ingest_faers >> build_silver >> upload_s3
 
-    # Full chain (cutover):
-    # ingest_ndc >> ingest_faers >> build_silver >> upload_s3 >> load_raw >> dbt_build >> dbt_test >> metrics
+    # Full chain:
+    ingest_ndc >> ingest_faers >> build_silver >> upload_s3 >> load_raw >> dbt_build >> dbt_test >> metrics
