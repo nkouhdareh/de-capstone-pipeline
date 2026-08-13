@@ -1,7 +1,7 @@
 # Project Progress & Handoff
 
 *A running snapshot of where the project is, so a fresh session (or a teammate) can pick up fast.*
-**Status as of:** Silver done (Week 2 — 45,030,932 clean rows). **Week 3: dbt on Snowflake — 24 months + full TR §5 star schema + 3 improvements ✅** — **10 models · 42/42 dbt tests** green (4 conformed dims all FK-tested; period-grain signals; ROR-CI strict flag; Airflow-ready calendar); real signals recovered (clozapine→neutropenia PRR 35.9, Paxlovid rebound PRR 228, opioid dependence). **Week 4: Airflow orchestration + S3 cutover + Snowflake key-pair auth ✅ COMPLETE** — 3 Docker stacks (Airflow 2.10.5 · PySpark · dbt); full **24-month run through Airflow = 45,030,932 rows** (5 h); **production RAW now loaded from S3**; **clozapine→neutropenia PRR 35.94 unchanged after the cutover** (same inputs, same maths, same answer, different infrastructure); and **one trigger now runs the entire pipeline** — 8 tasks green in 21 min, `dbt_build` PASS=53, `dbt_test` PASS=42. **NEXT: Streamlit — the only remaining MVP item.**
+**Status as of:** Silver done (Week 2 — 45,030,932 clean rows). **Week 3: dbt on Snowflake — 24 months + full TR §5 star schema + 3 improvements ✅** — **10 models · 42/42 dbt tests** green (4 conformed dims all FK-tested; period-grain signals; ROR-CI strict flag; Airflow-ready calendar); real signals recovered (clozapine→neutropenia PRR 35.9, Paxlovid rebound PRR 228, opioid dependence). **Week 4: Airflow orchestration + S3 cutover + Snowflake key-pair auth ✅ COMPLETE** — 3 Docker stacks (Airflow 2.10.5 · PySpark · dbt); full **24-month run through Airflow = 45,030,932 rows** (5 h); **production RAW now loaded from S3**; **clozapine→neutropenia PRR 35.94 unchanged after the cutover** (same inputs, same maths, same answer, different infrastructure); and **one trigger now runs the entire pipeline** — 8 tasks green in 21 min, `dbt_build` PASS=53, `dbt_test` PASS=42. **Week 5: Streamlit dashboard ✅ COMPLETE** — `app/dashboard.py` on port 8501 reads the marts directly (computes nothing; the dbt macros stay the single definition of every metric), all-time + monthly views, and reproduces **clozapine → neutropenia PRR 35.94 / 5,571 cases** with the monthly counts summing back to 5,571. **The MVP is complete end to end: ingest → Silver → S3 → Snowflake → dbt → Airflow → dashboard.**
 
 ---
 
@@ -299,9 +299,64 @@ A decision taken for dependency reasons turned out to be a security property.
 **There is no Snowflake password anywhere in the project.** Full procedure:
 `docs/Layer Explanation/Airflow.md` Part F.
 
-## NEXT
-- **Streamlit — the only remaining MVP item.** Everything upstream of the dashboard is built, run at
-  full scale, and verified end-to-end under orchestration.
+## Streamlit dashboard ✅ (2026-08-13) — MVP COMPLETE
+
+`app/dashboard.py` + `app/db.py`, own venv `.venv-app`, port **8501**. Reads `DBT_DEV` directly and
+**computes nothing** — PRR/ROR/ROR-CI/χ² all come from the dbt macros, so there is exactly one
+definition of each metric in the project (TR-24 holds end-to-end, warehouse to screen).
+
+- **Connection:** key-pair as `DE_CAPSTONE_SVC`, same three env vars as dbt. No password. Running
+  `app/db.py` directly is a self-test that prints the identity and the known signal.
+- **All-time view** — `SEM_SIGNAL_METRICS` filtered by drug / reaction / minimum cases / strict flag,
+  ranked by PRR, ROR, cases or χ², with `a` and χ² shown beside every ratio. **The view answers in
+  ~3.7 s**, so it was left as a view — no materialisation, no dbt change, no pipeline re-run.
+- **Period view** — `FCT_SIGNAL_METRICS`: "strongest this period" for a chosen month, plus a 24-month
+  PRR and case-count trend for a selected pair.
+
+**Verified:** clozapine → neutropenia **PRR 35.94 · ROR 46.76 · ROR-CI 45.21 · χ² 142,896 ·
+5,571 cases** — identical to the warehouse figures. Monthly: **24 months present**, monthly `a`
+summing to **5,571** (each case has one `receive_date`, so the sum must close), and **2024-12 alone
+gives PRR 34.78 on 222 cases** — a single month reproducing the all-time ratio within ~3%, so the
+signal is not carried by one reporting spike.
+
+**A defect the data caught.** The first ranked row was `Neutrophil count normal` (318 cases) with a
+**blank** PRR and ROR. Cause: that PT is reported *only* with clozapine, so `c = 0` and the ratio is
+**undefined**, which the macros correctly return as NULL rather than fabricating infinity — but
+Snowflake sorts NULLs **first** under `ORDER BY … DESC`, putting undefined pairs at the top of a
+magnitude ranking. Fixed with `nulls last`, and the blank is now explained in the UI.
+*Same shape as the `aws s3 sync` incident: the computation was right and the layer presenting it was
+wrong.* With that fixed the clozapine head is `Differential white blood cell count abnormal`
+(PRR 1,260 on 212 cases) — and the top-20 artifact analysis above is exactly why the page ranks with
+support shown for triage instead of flagging a binary answer.
+
+Run it: `runbook.md` → "Serve the dashboard (Streamlit)".
+
+## NEXT — Streamlit (the only remaining MVP item)
+Everything upstream is built, run at full scale, and verified end-to-end under orchestration. The
+dashboard reads tables that **already exist**; nothing new has to be computed.
+
+**What it reads** (schema `DE_CAPSTONE.DBT_DEV`):
+
+| Model | Grain | Rows | Use |
+|---|---|---|---|
+| `SEM_SIGNAL_METRICS` (view) | drug × reaction, **all-time** | 1,240,645 pairs | The main ranked table |
+| `FCT_SIGNAL_METRICS` (table) | drug × reaction × **month** | 5,069,399 | "Strongest this period" / trend over time |
+| `DIM_DRUG` / `DIM_REACTION` | one row each | 4,368 / 18,057 | Filter dropdowns |
+
+Columns on the signal models: `drug_key`, `drug_name`, `reaction_key`, `reaction_pt`, `a`, `b`, `c`, `d`,
+`prr`, `ror`, `ror_ci_lower`, `chi2_yates`, `is_signal`, `is_signal_strict`. **`a` is the case count.**
+
+**The design point to build around:** ranking by raw PRR puts artifacts on top (confounding by
+indication, device product-use events — see the top-20 analysis above), and a stricter statistical
+threshold does **not** fix it (`is_signal_strict` prunes only 269 of 315,270). So the dashboard should
+present a **ranked candidate list with support shown** — filter by minimum case count, sort by magnitude,
+show `a` and χ² next to every PRR — for an expert to triage. Not a binary flag.
+
+**Connection:** key-pair as `DE_CAPSTONE_SVC` (see the Snowflake section above) — `SNOWFLAKE_ACCOUNT`,
+`SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY_PATH` from the repo `.env`. **No password exists.**
+
+**Acceptance:** an analyst can filter by drug / reaction / period and see ranked signals, and the app
+reproduces **clozapine → neutropenia, PRR 35.9, 5,571 cases**. Port **8501** (8080 is Airflow, 8081 dbt docs).
 - *Small:* add a second MFA method to `NKOUH` (only user, only `ACCOUNTADMIN` — a lost phone means
   Snowflake support).
 - *Optional:* trim `build_silver`'s log volume (it forwards every Spark INFO line — invaluable for a
