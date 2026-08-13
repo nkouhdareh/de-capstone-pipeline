@@ -1,7 +1,7 @@
 # Project Progress & Handoff
 
 *A running snapshot of where the project is, so a fresh session (or a teammate) can pick up fast.*
-**Status as of:** Silver done (Week 2 — 45,030,932 clean rows). **Week 3: dbt on Snowflake — 24 months + full TR §5 star schema + 3 improvements ✅** — **10 models · 42/42 dbt tests** green (4 conformed dims all FK-tested; period-grain signals; ROR-CI strict flag; Airflow-ready calendar); real signals recovered (clozapine→neutropenia PRR 35.9, Paxlovid rebound PRR 228, opioid dependence). **Week 4: Airflow orchestration — built & smoke-passed ✅** — 3 Docker stacks (Airflow 2.10.5 · PySpark · dbt), DAG `pv_pipeline`, one-month smoke **1,549,263 rows** end-to-end to S3 with production untouched; scratch rehearsal proved the S3→Snowflake path returns **exactly the same rows** as the validated internal-stage path (`MINUS` = 0). **NEXT: full 24-month run → production cutover (`TRUNCATE` mandatory) → dbt in the chain → Streamlit.**
+**Status as of:** Silver done (Week 2 — 45,030,932 clean rows). **Week 3: dbt on Snowflake — 24 months + full TR §5 star schema + 3 improvements ✅** — **10 models · 42/42 dbt tests** green (4 conformed dims all FK-tested; period-grain signals; ROR-CI strict flag; Airflow-ready calendar); real signals recovered (clozapine→neutropenia PRR 35.9, Paxlovid rebound PRR 228, opioid dependence). **Week 4: Airflow orchestration + S3 cutover ✅ COMPLETE** — 3 Docker stacks (Airflow 2.10.5 · PySpark · dbt); full **24-month run through Airflow = 45,030,932 rows** (5 h); **production RAW now loaded from S3**; **clozapine→neutropenia PRR 35.94 unchanged after the cutover** (same inputs, same maths, same answer, different infrastructure); and **one trigger now runs the entire pipeline** — 8 tasks green in 21 min, `dbt_build` PASS=53, `dbt_test` PASS=42. **NEXT: Streamlit — the only remaining MVP item.**
 
 ---
 
@@ -204,15 +204,79 @@ into the containers explicitly (a Compose `.env` only does variable interpolatio
 read-ahead. (2) the worker crash loop above. Full phase guide (local only, folder git-ignored):
 `docs/Layer Explanation/Airflow.md` — Part E has the current file contents and how to operate it.
 
-**⚠️ Cutover hazard:** `RAW.SILVER_DRUG_EVENT` already holds 45,030,932 rows and Snowflake tracks load
-metadata **per file path**, so a `COPY` from the S3 stage would **append a second full copy (~90M rows)**.
-The cutover must `TRUNCATE` first, after a full-scale scratch comparison.
+## Full 24-month run + production S3 cutover ✅ (2026-08-11 / 12)
+
+**Full run through Airflow:** `{"months":"all"}` → **success in 5 h 0 m**, 24/24 month partitions,
+**`Requested-month Silver rows: 45030932`** — matching the notebook to the row, on a capped `local[4]`
+Spark with the whole Airflow stack sharing the machine (~15 min/month).
+
+**A bug the gates caught.** The S3 prefix afterwards held **499 objects, not 486**. Cause:
+`aws s3 sync` **without `--delete` only adds**, and Spark names its output with a per-run UUID — so an
+earlier one-month re-run's 13 files were left behind alongside the new ones. Unfixed, a `COPY` would
+have loaded **46,580,195** rows (January twice) and silently corrupted every PRR/ROR value.
+*The Spark job was idempotent; the upload task was not — idempotency is a property of the whole chain.*
+Fixed with `sync --delete` plus `s3:DeleteObject` **scoped to `silver_pipeline/*` only**, so the
+pipeline can mirror the prefix it owns while the validated artifact stays physically undeletable.
+Prefix back to **486 / 3,913,633,244 bytes** — within **2,698 bytes** (Parquet metadata) of the
+hand-uploaded copy, itself evidence the two Silvers are the same data.
+
+**Full-scale comparison before touching production** (temporary table, read-only):
+**45,030,932** = production's **45,030,932**, `MINUS` on the grain key = **0**, 24 months present.
+Identical rows, not merely an identical count.
+
+**Cutover.** `TRUNCATE` + `COPY` from `RAW.SILVER_PIPELINE_S3_STAGE` (and `RAW.DRUG_NDC` from
+`NDC_S3_STAGE`). **`TRUNCATE` is a correctness requirement, not a preference:** Snowflake tracks load
+metadata *per file path*, and `TRUNCATE` clears it while `DELETE` does not. The dbt marts are
+materialised tables, so they kept serving throughout — no broken window.
+
+**Results:** `dbt build` **through Airflow** → **PASS=53, WARN=0, ERROR=0** (10 models + seed + 42 tests);
+`FCT_REPORT_DRUG_REACTION` = **45,030,932**; **clozapine → neutropenia PRR 35.94 · ROR 46.76 ·
+ROR-CI 45.21 · χ² 142,896 · 5,571 cases — unchanged from before the cutover.**
+Production RAW is now loaded from S3; the internal stages + `load_to_snowflake.py` remain as rollback.
+
+## Reading the output critically — the top-20 by PRR
+Ranking all-time signals by PRR (≥100 cases) shows **most of the largest values are artifacts**, which
+is itself a finding worth reporting:
+
+| Pattern | Examples | Why it appears |
+|---|---|---|
+| **Confounding by indication** | felodipine, isosorbide di/mononitrate, digoxin → **cardiospasm** | Nitrates and calcium-channel blockers *treat* oesophageal spasm — the drug co-occurs with the condition it is prescribed for |
+| **Device/product-use events** | copper → *foreign body in reproductive tract*; etonogestrel → *pregnancy with implant contraceptive*; treprostinil → *device wireless communication issue* | IUDs, implants and pumps generate product-use reports inside the drug dataset |
+| **Genuine label-level signals** | **pentosan polysulfate → pigmentary maculopathy** (real, led to an FDA label change); docetaxel → lacrimal structure injury; clozapine → neutropenia & **benign ethnic neutropenia (PRR 2,837)** | The signals the method is meant to find |
+| **Reporting/notification bias** | talc → mesothelioma | Litigation-driven reporting inflates the ratio |
+
+**Conclusion:** disproportionality is a **screening** tool, not causal evidence. The right product is a
+**ranked candidate list with support shown** for a domain expert to triage — not a binary flag. It also
+answers the "should I fuzzy-match the drug-name tail?" question: the top signals are limited by
+**interpretation**, not by name resolution.
+
+## Full chain in one trigger ✅ (2026-08-12)
+`ingest_ndc → ingest_faers → build_silver → upload_s3 → load_raw → dbt_build → dbt_test → publish_metrics`
+— **8 tasks green, DAG run `success` in 21 minutes.**
+
+- **`load_raw` runs through dbt, not through Airflow's Python.** Using `snowflake.connector` in the
+  Airflow worker would drag in `cryptography>=46` — above Airflow 2.10.5's pin, the same conflict that
+  crash-looped the worker earlier. Instead a dbt macro (`macros/load_raw_from_s3.sql`) does the
+  `TRUNCATE` + `COPY`, invoked as `dbt run-operation` in the dbt container. **The Snowflake connection
+  exists in exactly one place.** A second macro (`publish_metrics.sql`) logs the headline numbers, so
+  every run leaves an auditable record of what it produced.
+- `DE_CAPSTONE_DBT_ROLE` granted `TRUNCATE`+`INSERT` on **only** the two RAW tables (it already owned
+  them, so this was belt-and-braces — but it makes the intent legible).
+- **Run with `{"months":"2023-01"}` and it still exercises everything:** dynamic partition overwrite
+  rewrites only January locally, the other 23 months stay on disk, `sync --delete` removes nothing, S3
+  keeps all 486 files, and `load_raw` still loads the full 45,030,932. 21 minutes instead of six hours,
+  same final numbers.
+
+**Verified:** `load_raw` → `RAW.SILVER_DRUG_EVENT rows: 45030932`, `RAW.DRUG_NDC rows: 136520` ·
+`dbt_build` → **PASS=53 WARN=0 ERROR=0** · `dbt_test` → **PASS=42 WARN=0 ERROR=0** ·
+`publish_metrics` → `fct_report_drug_reaction rows: 45030932`, `signals (is_signal): 315270`.
 
 ## NEXT
-- **Full 24-month DAG run** (`{"months":"all"}`) → Silver **45,030,932**, then the **production cutover**:
-  scratch-load and compare at full scale → `TRUNCATE` + `COPY` into RAW → wire `dbt_build`/`dbt_test`
-  into the chain (`fct` **45,030,932**, **42/42**). Internal stages stay as the rollback until it passes.
-- **Streamlit** after the cutover.
+- **Streamlit — the only remaining MVP item.** Everything upstream of the dashboard is built, run at
+  full scale, and verified end-to-end under orchestration.
+- *Optional:* trim `build_silver`'s log volume (it forwards every Spark INFO line — invaluable for a
+  10-minute job, unwieldy for a 5-hour one); a scheduled rather than manual trigger (`dim_date` already
+  auto-extends for this); CI.
 - pytest TR-37 (normalisation) / TR-38 (metrics) — dbt covers TR-38 in-warehouse; Python copies in `dbt_reference/tests/`.
 
 ## How to run (quick)

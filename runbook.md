@@ -314,6 +314,8 @@ validate the transform before the full run.)*
 | Silver read: `Cannot reserve additional contiguous bytes in the vectorized reader` / `OutOfMemoryError: Java heap space` | Spark's vectorized Parquet reader batches 4,096 rows of the wide, deeply-nested `patient.drug[]` column at once (× many cores) → heap blows | Disable it: `spark.sql.parquet.enableVectorizedReader=false` (already set in the notebook); row-based reading is far lighter on nested data | Yes |
 | A Silver run crashed and you want to retry | Orphaned Spark spill may remain (now on **D:**, so it cannot fill C:) | Delete everything in `D:/capstone/data/spark-tmp/` (host) or `docker exec capstone-spark-jupyter rm -rf /opt/spark-tmp/*`; check `docker system df`; then re-run — month-by-month writes are idempotent (dynamic partition overwrite) | Yes |
 | Airflow `build_silver` fails with `java.io.IOException: Cannot allocate memory` (in `ReadAheadInputStream` / `FileDispatcherImpl.read0`), while the **same job passes when run manually** | **Native (off-heap), not heap**, exhaustion — `--driver-memory 4g` was working. The Airflow stack (6 containers, ~2.3 GiB idle) plus a 4 GB Spark driver exceeds Docker's memory, which defaults to 50% of host RAM (7.58 GiB here); `local[*]` multiplies per-task native buffers | Raise the ceiling: `%UserProfile%\.wslconfig` → `[wsl2]` / `memory=10GB`; `docker compose stop` both stacks (**never `down -v`**), `wsl --shutdown`, restart Docker Desktop. Then add `--master local[4]` and `--conf spark.unsafe.sorter.spill.read.ahead.enabled=false` to `spark-submit`. *(Do **not** try `--conf spark.sql.shuffle.partitions` — the job sets it in code and a builder option overrides a `--conf` at submit time.)* | Yes — per-month dynamic partition overwrite is idempotent; failed attempts leave nothing to clean up |
+| S3 prefix has **more objects than the run produced** (e.g. 499 where 486 expected), and a `COPY` from that stage would load too many rows | `aws s3 sync` **without `--delete` only adds**, and Spark names its output files with a **per-run UUID** — so a re-run's files land *alongside* the previous run's instead of replacing them. The Spark job is idempotent; the upload task is not | Add `--delete` to the sync (makes the destination an exact mirror) and grant `s3:DeleteObject` **scoped to the pipeline's own prefix only**, never the validated artifact or NDC prefixes. Then re-run just the upload task (`airflow tasks test … upload_s3`) — no Spark needed. Verify the object count and total bytes | Yes |
+| `COPY INTO` a table that already holds data **doubles the row count** | Snowflake tracks load metadata **per file path**. Files from a *different* stage are paths the table has never seen, so they load again on top of the existing rows | `TRUNCATE TABLE` before the `COPY`. **`TRUNCATE` clears the load metadata; `DELETE` does not** — so `DELETE` is not a substitute. Always compare a scratch-table load against the current production count (and a `MINUS` on the grain key) *before* truncating anything | Yes — after `TRUNCATE` |
 | Only `airflow-worker` crash-loops after adding dbt to `_PIP_ADDITIONAL_REQUIREMENTS` — `RestartCount` climbing, `health` stuck at `starting`, **no traceback**, log ends at `BACKEND=redis` | `dbt-core` 1.12 requires `click>=8.3` / `cryptography>=46` / `protobuf>=6`, all above apache-airflow 2.10.5's pins; the variable installs with **no constraint file** and silently upgrades Airflow's own dependencies. Scheduler/webserver survive because `celery worker` imports a wider surface | Remove the dbt packages from the pip line, then `docker compose up -d --force-recreate airflow-worker` — a plain restart keeps the bad `/home/airflow/.local`. Run dbt in its own container (`capstone-dbt`, `dbt.Dockerfile`) and have Airflow exec into it, same pattern as Spark. **Diagnosis tip:** `{{.State.ExitCode}}` is meaningless while a container runs — sample `{{.RestartCount}}` twice, 60 s apart | Yes |
 
 ---
@@ -341,6 +343,38 @@ API count vs disk.
 ### Rebuilding from raw
 
 *Bronze is immutable, so silver and gold can be rebuilt without re-ingesting.*
+
+### Reloading Snowflake RAW (and rolling back the S3 cutover)
+
+Production RAW is loaded from **S3** (`RAW.SILVER_PIPELINE_S3_STAGE` / `RAW.NDC_S3_STAGE`). The
+**internal stages and `scripts/load_to_snowflake.py` are deliberately kept intact as the rollback
+path** — they rebuild RAW from the local Parquet on D: in ~10 minutes:
+
+```bash
+.venv-dbt/Scripts/python.exe scripts/load_to_snowflake.py --what silver
+```
+
+**Before any reload or cutover, always run the comparison first** — load into a `TEMPORARY` table and
+check three things against the current production table: the row count, the row count for a known
+month, and a `MINUS` on `report_drug_reaction_key` (must be **0**). Equal counts alone are not enough;
+the `MINUS` is what proves the rows are identical rather than merely equinumerous.
+
+Then, and only then:
+
+```sql
+TRUNCATE TABLE RAW.SILVER_DRUG_EVENT;   -- clears load metadata; DELETE does NOT
+COPY INTO RAW.SILVER_DRUG_EVENT FROM @RAW.SILVER_PIPELINE_S3_STAGE
+  FILE_FORMAT = (FORMAT_NAME = 'DE_CAPSTONE.RAW.FF_PARQUET')
+  MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+  PATTERN = '.*[.]parquet' ON_ERROR = 'ABORT_STATEMENT';
+```
+
+Verify **45,030,932**, then rebuild the models (`dbt build` → PASS=53) and re-check a known signal —
+**clozapine → neutropenia, PRR 35.94, 5,571 cases**. If a known-answer signal is unchanged after a
+reload, the load path is faithful.
+
+*The dbt models are materialised tables, so they keep serving their previous contents throughout a
+reload — there is no window where the marts are broken.*
 
 ---
 
