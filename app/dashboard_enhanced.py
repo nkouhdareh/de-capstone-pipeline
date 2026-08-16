@@ -335,6 +335,10 @@ def bar_top_signals(frame, rank_by, top_n=20):
     )
 
     figure.update_layout(xaxis_title=rank_by, yaxis_title=None)
+    figure.update_yaxes(
+        categoryorder="array",
+        categoryarray=list(data.iloc[::-1]["pair"]),
+    )    
 
     return style(figure, height=max(400, 26 * len(data)))
 
@@ -686,6 +690,7 @@ with tab_overview:
         st.plotly_chart(
             funnel_figure(pairs, signals, strict_signals),
             width="stretch",
+            key="overview_funnel",
         )
         st.caption(
             "The first two stages are documented figures from the Silver "
@@ -697,6 +702,7 @@ with tab_overview:
         st.plotly_chart(
             status_donut(pairs, signals, strict_signals),
             width="stretch",
+            key="overview_donut",
         )
         st.caption(
             f"`is_signal_strict` prunes only {signals - strict_signals:,} of "
@@ -720,7 +726,7 @@ with tab_overview:
         if figure is None:
             st.info("No pairs with a defined PRR at this case floor.")
         else:
-            st.plotly_chart(figure, width="stretch")
+            st.plotly_chart(figure, width="stretch", key="overview_volcano")
             st.caption(
                 f"Up to {VOLCANO_LIMIT:,} pairs ranked by chi-square, with at "
                 f"least {int(min_cases):,} cases each "
@@ -764,6 +770,7 @@ with tab_explorer:
         st.plotly_chart(
             bar_top_signals(explorer_frame, rank_by),
             width="stretch",
+            key="explorer_bars",
         )
 
         st.subheader(
@@ -775,6 +782,7 @@ with tab_explorer:
             hide_index=True,
             width="stretch",
             column_config=TABLE_COLUMNS,
+            key="explorer_table",
         )
 
         st.caption(
@@ -801,6 +809,7 @@ with tab_profile:
             st.plotly_chart(
                 bar_top_signals(profile_frame, "PRR"),
                 width="stretch",
+                key="profile_bars",
             )
 
             st.dataframe(
@@ -808,6 +817,7 @@ with tab_profile:
                 hide_index=True,
                 width="stretch",
                 column_config=TABLE_COLUMNS,
+                key="profile_table",
             )
 
         if reaction != ANY:
@@ -835,6 +845,7 @@ with tab_profile:
                 st.plotly_chart(
                     trend_figure(trend, drug, trend_reaction),
                     width="stretch",
+                    key="profile_trend",
                 )
 
                 months_column, cases_column = st.columns(2)
@@ -919,7 +930,7 @@ with tab_quality:
         if figure is None:
             st.info("Not enough overlap to build a grid at this case floor.")
         else:
-            st.plotly_chart(figure, width="stretch")
+            st.plotly_chart(figure, width="stretch", key="quality_heatmap")
             st.caption(
                 f"Built from {len(heatmap_frame):,} flagged pairs with at "
                 f"least {int(min_cases):,} cases. Colour is log10(PRR) "
@@ -949,7 +960,12 @@ with tab_quality:
         }
     )
 
-    st.dataframe(threshold_frame, hide_index=True, width="stretch")
+    st.dataframe(
+        threshold_frame,
+        hide_index=True,
+        width="stretch",
+        key="quality_thresholds",
+    )
 
     st.markdown(
         "Thresholds live in `dbt_project.yml` and the formulas in "
