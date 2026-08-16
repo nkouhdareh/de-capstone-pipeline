@@ -271,6 +271,70 @@ answers the "should I fuzzy-match the drug-name tail?" question: the top signals
 `dbt_build` → **PASS=53 WARN=0 ERROR=0** · `dbt_test` → **PASS=42 WARN=0 ERROR=0** ·
 `publish_metrics` → `fct_report_drug_reaction rows: 45030932`, `signals (is_signal): 315270`.
 
+### Precision worth stating: two proofs, combined on 2026-08-15 (audited the same day)
+
+> **Resolved.** The gap described below was closed at **13:29 UTC on 2026-08-15** — see
+> "Full chain at full scale" further down. The audit is kept because the orphan-task discovery is a
+> real finding about Airflow, and because the gap is what motivated the run.
+
+
+- **Full scale** was proven on **2026-08-11**: 24 months, 45,030,932 rows — but the DAG had only
+  **four** tasks in dependency order at the time (`ingest_ndc → ingest_faers → build_silver → upload_s3`).
+- **The full eight-task chain** was proven on **2026-08-12** and again on **08-13** — but only ever
+  with `{"months":"2023-01"}`.
+
+**No single run has done both.** The 2026-08-11 run *does* show green ticks on `dbt_build` and
+`dbt_test`, but they were **orphan tasks** then: defined in the DAG with no upstream edge, so Airflow
+scheduled them in the same tick as `ingest_ndc` — `dbt_build` finished at **11:36:03** while
+`upload_s3` did not start until **16:28:44**. They ran correctly, against `RAW` as loaded earlier via
+the internal stages, but *not* against the Silver that run produced. `load_raw` and `publish_metrics`
+had no task instances at all (`airflow tasks states-for-dag-run` returns **six** rows, not eight).
+
+This does not invalidate anything: D.9 explains why a one-month trigger still loads the full
+45,030,932, so the end state is identical either way. It is stated here so the claim stays exact.
+
+## Full chain at full scale ✅ (2026-08-15) — the gap closed
+
+`{"months":"all"}` through the current eight-task DAG: **`success` in 3 h 57 m 23 s, all 8 tasks
+green, in dependency order.** Run `manual__2026-08-15T09:31:59+00:00`.
+
+| Task | Duration | Result |
+|---|---|---|
+| `ingest_ndc` · `ingest_faers` | < 1 s each | SKIP — Bronze present |
+| `build_silver` | **3 h 47 m 27 s** | 24/24 months · **`Requested-month Silver rows: 45030932`** |
+| `upload_s3` | 5 m 28 s | 486 objects mirrored with `--delete` |
+| `load_raw` | 2 m 43 s | `RAW.SILVER_DRUG_EVENT` **45,030,932** · `RAW.DRUG_NDC` **136,520** |
+| `dbt_build` | 1 m 08 s | **PASS=53 WARN=0 ERROR=0** |
+| `dbt_test` | 9.7 s | **PASS=42 WARN=0 ERROR=0** |
+| `publish_metrics` | 15.7 s | `fct_report_drug_reaction` **45,030,932** · `dim_drug` 4,368 · `dim_reaction` 18,057 |
+
+**Every task started 1–2 seconds after its predecessor finished** — the scheduler picking up each
+newly-unblocked task on the next tick. Contrast 2026-08-11, where `dbt_build` began four hours
+*before* `upload_s3`.
+
+**Baselines captured before the run, re-checked after:**
+
+| Prefix | Before | After |
+|---|---|---|
+| `silver_pipeline/` (rewritten by this run) | 486 / 3,913,633,244 | **486 / 3,913,633,244** |
+| `silver/drug_event/` (the untouchable fallback) | 486 / 3,913,635,942 | **486 / 3,913,635,942** |
+
+The first is the strongest test the D.7 `sync --delete` fix has had: Spark renamed all 486 files with
+new UUIDs, so the sync had to delete 486 objects and upload 486 replacements. No accumulation — and
+the byte total matched **exactly**, confirming the Spark output is deterministic. The second proves
+least-privilege IAM held through a run that truncated production RAW.
+
+**Reproducibility:** all 24 per-month lines — atomic and quarantined counts — were **identical** to
+the 2026-08-11 run, including the three mega-report quarantine spikes (25,000 · 61,249 · 345,495).
+
+**An hour faster, and the reason is documented.** 3 h 57 m against 5 h 00 m for the same work. The
+entire difference is three months (2024-02/03/04) that took 26–30 minutes each on 11 August and
+**9.2 minutes each** today. The other 21 months were unchanged. Cause: **CPU contention**, not data.
+Spark runs on `--master local[4]`, and WSL shares all logical processors with Windows — so anything
+else using the laptop steals cycles. Memory could not be the cause: `.wslconfig` gives Docker a hard
+10 GB reservation. `Airflow.md` D.6 predicted exactly this ("Zoom competes only for CPU"); this run
+was the accidental controlled experiment that confirmed it.
+
 ## Snowflake key-pair authentication ✅ (2026-08-13)
 Snowflake deprecates **password-only sign-ins on 18 Aug 2026**, which would have broken `load_raw`,
 `dbt_build`, `dbt_test` and `publish_metrics`. Migrated ahead of the deadline — and used it to separate
@@ -330,6 +394,40 @@ wrong.* With that fixed the clozapine head is `Differential white blood cell cou
 support shown for triage instead of flagging a binary answer.
 
 Run it: `runbook.md` → "Serve the dashboard (Streamlit)".
+
+## Streamlit in Snowflake ✅ (2026-08-16) — the dashboard is now a URL
+
+`app/dashboard_snowflake.py`, deployed as **`DE_CAPSTONE.DBT_DEV."Drug Safety Signals"`** and running
+with the rights of **`DE_CAPSTONE_DBT_ROLE`** on `DE_CAPSTONE_WH`. **The demo no longer needs the
+laptop** — no Docker, no venv, no terminal, nothing to fail live.
+
+**Three dashboards, all working:** `dashboard.py` (8501, rollback) · `dashboard_enhanced.py` (8502,
+local demo) · `dashboard_snowflake.py` (hosted). The two local files were not modified.
+
+- **Runtime:** Streamlit **1.52.2**, Plotly **6.7.0** (declared in the app's `environment.yml`).
+  Created through **"Create on warehouse (legacy)"** — the newer Workspaces/container path needs
+  `pyproject.toml` + `uv` + an artifact repository or External Access Integration, which is a dead
+  end for a short job.
+- **One privilege granted, the only account change:**
+  `grant create streamlit on schema DE_CAPSTONE.DBT_DEV to role DE_CAPSTONE_DBT_ROLE`.
+  `CREATE STREAMLIT` is a distinct schema privilege and is not implied by owning the schema — until
+  it was granted, `DE_CAPSTONE` did not appear in the database picker.
+- **Least privilege held:** the app runs as the same read-only role dbt uses, not `ACCOUNTADMIN`.
+- **Five code differences** from the local version: `get_active_session()` instead of key-pair auth
+  (**no credentials in the file**), `session.sql(...).to_pandas()` instead of a cursor, `?` instead
+  of `%s` for the 18 bind parameters, lowercased column names, and a light Plotly template. Every
+  chart, tab, filter and SQL string is otherwise identical.
+- **Two rendering fixes:** `render_mode="svg"` on the volcano, because `px.scatter` switches to
+  **WebGL above ~1,000 points** and WebGL is unavailable inside the Snowsight iframe; and more top
+  margin in `style()`, because the horizontal legend was colliding with the chart title.
+
+**Verified:** `dim_drug` **4,368 / 4,368** · Silver rows **45,030,932** · scored pairs **1,240,645** ·
+candidate signals **315,270** · `CLOZAPINE` + `Neutropenia` **24 months / 5,571 cases**. Same numbers
+as the local app.
+
+**The local apps remain the fallback** — the same pattern as `load_to_snowflake.py` behind the S3
+cutover and `dashboard.py` behind the Plotly rebuild. Full write-up:
+`docs/Layer Explanation/Streamlit.md` Part K.
 
 ## NEXT — Streamlit (the only remaining MVP item)
 Everything upstream is built, run at full scale, and verified end-to-end under orchestration. The

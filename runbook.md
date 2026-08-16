@@ -326,6 +326,41 @@ Spark job, or edit `pv_pipeline.py` (`upload_s3` is parsed when *it* starts).
 **Ports:** Jupyter `8888` · Airflow `8080` · dbt docs `8081` (default 8080 clashes with Airflow) ·
 Streamlit `8501`. Snowflake is **not** localhost — it's `app.snowflake.com`.
 
+### Before a destructive run — capture baselines
+
+A `{"months":"all"}` run is destructive downstream: `upload_s3` mirrors with `--delete` and
+`load_raw` does `TRUNCATE` + `COPY`. **`build_silver` exits 0 even if it produced a partial Silver**,
+so a bad build would propagate into production RAW unchallenged. Capture these first — they take
+seconds and they are what lets you prove afterwards that nothing was damaged.
+
+```bash
+aws s3 ls s3://de-capstone-pv-617371012792/silver_pipeline/ --recursive --summarize --profile de-capstone | tail -3
+```
+
+```bash
+aws s3 ls s3://de-capstone-pv-617371012792/silver/drug_event/ --recursive --summarize --profile de-capstone | tail -3
+```
+
+Both should read **486 objects**; `silver/drug_event/` should be **3,913,635,942 bytes**. Re-run both
+after the DAG finishes:
+
+- `silver_pipeline/` back to **486** proves `sync --delete` mirrored rather than accumulated (the D.7 bug).
+- `silver/drug_event/` **unchanged** proves least-privilege IAM held — the pipeline credential cannot
+  reach the fallback artifact.
+
+Also pre-flight: Windows sleep set to **Never**, `df -h /d` for headroom, and
+`ls /d/capstone/data/dq_cache/drug_event` showing both `receive_year=2023` and `receive_year=2024`
+(otherwise `build_cache` spends ~15 extra minutes rebuilding from Bronze).
+
+**The gate to watch:** `build_silver` must end on `Requested-month Silver rows: 45030932`. Progress
+without opening the huge log in a browser:
+
+```bash
+grep -h "Silver written:" /d/capstone/de-capstone/airflow/logs/dag_id=pv_pipeline/run_id=manual__<TIMESTAMP>/task_id=build_silver/*.log
+```
+
+One line per completed month; 24 is the finish. Expect ~9–13 min/month on an idle machine.
+
 ### Serve the dashboard (Streamlit)
 
 The dashboard is **not** part of the orchestrated pipeline — it reads the finished dbt marts in
@@ -363,6 +398,34 @@ python -m venv .venv-app
 `sem_signal_metrics` **view** (fast enough that no materialisation was needed).
 In the UI, `CLOZAPINE` + `Neutropenia` must show **24 months** and **5,571 cases across months** —
 each case has one `receive_date`, so the monthly counts must sum to the all-time count.
+
+### Open the hosted dashboard (Streamlit in Snowflake)
+
+**No laptop setup required** — no Docker, no venv, no terminal.
+
+Snowsight → **Projects → Streamlit → Drug Safety Signals**
+(`DE_CAPSTONE.DBT_DEV`, warehouse `DE_CAPSTONE_WH`, running as `DE_CAPSTONE_DBT_ROLE`).
+Use **Share** to hand the URL to someone else.
+
+**Editing:** the Snowsight code editor, then **Run**. `environment.yml` in the same Files panel holds
+the package list (currently just `plotly`). The canonical copy is `app/dashboard_snowflake.py` —
+paste between the two after editing either side, so they do not drift.
+
+**One-time setup, already done:**
+
+```sql
+grant create streamlit on schema DE_CAPSTONE.DBT_DEV to role DE_CAPSTONE_DBT_ROLE;
+```
+
+`CREATE STREAMLIT` is a distinct schema privilege, not implied by schema ownership. Without it the
+database does not appear in the app-creation picker.
+
+**Gates:** Streamlit **1.52.2** · Plotly **6.7.0** · `dim_drug` **4,368 / 4,368** · KPI row
+**45,030,932 / 1,240,645 / 315,270** · `CLOZAPINE` + `Neutropenia` **24 months / 5,571 cases** —
+identical to the local app.
+
+The local dashboards on 8501 and 8502 remain the fallback if Snowsight is slow or the network
+misbehaves. Full write-up: `docs/Layer Explanation/Streamlit.md` Part K.
 
 ---
 
@@ -450,6 +513,8 @@ validate the transform before the full run.)*
 | Only `airflow-worker` crash-loops after adding dbt to `_PIP_ADDITIONAL_REQUIREMENTS` — `RestartCount` climbing, `health` stuck at `starting`, **no traceback**, log ends at `BACKEND=redis` | `dbt-core` 1.12 requires `click>=8.3` / `cryptography>=46` / `protobuf>=6`, all above apache-airflow 2.10.5's pins; the variable installs with **no constraint file** and silently upgrades Airflow's own dependencies. Scheduler/webserver survive because `celery worker` imports a wider surface | Remove the dbt packages from the pip line, then `docker compose up -d --force-recreate airflow-worker` — a plain restart keeps the bad `/home/airflow/.local`. Run dbt in its own container (`capstone-dbt`, `dbt.Dockerfile`) and have Airflow exec into it, same pattern as Spark. **Diagnosis tip:** `{{.State.ExitCode}}` is meaningless while a container runs — sample `{{.RestartCount}}` twice, 60 s apart | Yes |
 | Streamlit's ranked table is topped by rows with **blank PRR / ROR** | The reaction was reported *only* with that drug, so `c = 0`: `metric_prr` divides by `nullif(c/(c+d), 0)` and returns NULL — undefined, not infinite. Snowflake sorts **NULLs first** under `ORDER BY … DESC`, so undefined pairs head a list meant to rank by magnitude | `order by <col> desc nulls last` in `build_signal_query` / `build_period_query`. The dbt side was already correct — `coalesce(…, false)` keeps `is_signal` FALSE | Yes |
 | The monthly table is empty while the all-time table has rows | The all-time case floor (default **100**) was applied at monthly grain, where a typical `a` is single digits | Use the separate **"Minimum cases (a) - monthly"** input (default 5). Two different floors for two different grains is deliberate, not a duplicate control | Yes |
+| The Airflow Graph/Grid view shows tasks that never ran in the run you are inspecting (empty cells, or tasks whose timestamps make the dependency order impossible) | **Airflow 2.x has no per-run DAG versioning.** The scheduler stores one serialised DAG — the latest parse — and the UI renders that structure over *every* historical run. A run from before a DAG edit is displayed with today's graph | Ignore the graph for historical runs. Use `docker compose exec airflow-scheduler airflow tasks states-for-dag-run pv_pipeline "<run_id>"` — it lists only the task **instances** that actually existed, with start/end times. Cross-check against the run's Event Log. Per-run versioning arrives in Airflow 3 | Yes |
+| Streamlit crashes with `StreamlitDuplicateElementId: There are multiple plotly_chart elements with the same auto-generated ID` | **Tabs are not lazy** — every tab's code runs on every rerun, so charts in different tabs coexist. Streamlit derives an element's ID from its type *and* parameters, so two charts that happen to receive identical data collide. Hit on the enhanced dashboard when Drug=CLOZAPINE + Reaction=(any) + Rank by=PRR made the Signal Explorer and Drug Profile bar charts byte-identical | Give every chart and table an explicit `key="..."`, so the ID no longer depends on the data. Applied to all 10 `st.plotly_chart` / `st.dataframe` calls in `app/dashboard_enhanced.py`, not only the two that collided | Yes |
 
 ---
 
