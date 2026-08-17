@@ -429,10 +429,11 @@ as the local app.
 cutover and `dashboard.py` behind the Plotly rebuild. Full write-up:
 `docs/Layer Explanation/Streamlit.md` Part K.
 
-## CI/CD — GitHub Actions ✅ phases 1–3 (2026-08-17)
+## CI/CD — GitHub Actions ✅ phases 1–5 · phase 6 built (2026-08-17)
 
-Two workflows, six checks, and a Snowflake CI identity that **cannot reach production**. Full
-write-up: `docs/Layer Explanation/CI_CD.md`.
+Four workflows, a Snowflake CI identity that **cannot reach production**, an AWS OIDC role that
+**cannot write to S3**, and a Terraform role that **cannot modify itself**. No AWS access key and no
+Snowflake password exists anywhere in the project. Full write-up: `docs/Layer Explanation/CI_CD.md`.
 
 ### `.github/workflows/ci.yml` — the static gate (no secrets)
 
@@ -490,8 +491,77 @@ Three separate times — `CREATE STREAMLIT` not implied by owning `DBT_DEV`; `AC
 read `DBT_CI` because **owning a role is not being a member of it**; `CREATE TABLE` needing its own
 grant. Snowflake separates ownership, membership and privilege.
 
-**Still to do:** phase 4 (capstone-owned AWS OIDC role), phase 5 (S3 contract check on the 486-object
-fallback prefix), phase 6 (Terraform for the CI IAM role only).
+### Phase 4 — a capstone-owned AWS OIDC role ✅
+
+`arn:aws:iam::617371012792:role/de-capstone-github-actions` — trusted **only** by this repository,
+allowed **only** `s3:ListBucket` + `s3:GetObject` on `silver/drug_event/`. No write, no delete, no
+other prefix. The account's existing OIDC provider was **reused, not duplicated** (one per account);
+the broad bootcamp roles were not reused; `de-capstone-airflow-uploader` and the Snowflake
+storage-integration role were not touched. **There is no AWS access key in the repo or its secrets** —
+every credential is minted per job by OIDC and expires with it.
+
+**A permissions boundary** (`de-capstone-github-actions-boundary`) caps the role at read-only on that
+prefix whatever its own policy says — attached, then the contract workflow was re-run to prove the cap
+does not break it.
+
+**The trap this phase turned on.** The first trust policy used the documented
+`repo:owner/repo:*` subject and would have matched **nothing**: GitHub's *immutable subject claims*
+(enforced for all repositories created after 15 July 2026 — this one dates from 2026-08-02) embed
+numeric ids, so the real subject is
+`repo:nkouhdareh@263947291/de-capstone-pipeline@1320110552:…`. IAM validates syntax, not
+reachability. The workflow therefore **decodes the token and prints the subject before assuming**, so
+a failure names the exact string to fix. Proven:
+`arn:aws:sts::617371012792:assumed-role/de-capstone-github-actions/GitHubActions`.
+
+### Phase 5 — the S3 contract check ✅
+
+`.github/workflows/s3-contract.yml` verifies the protected fallback prefix still holds **exactly 486
+objects / 3,913,635,942 bytes**, on every PR, every push to `main`, and on demand. Read-only by
+construction: the role has no `PutObject` or `DeleteObject`, so **the check cannot alter what it
+verifies**. What was a hand-run `aws s3 ls` before and after the destructive 15 August run is now
+automatic.
+
+**Demonstrated refusing a wrong number.** `silver/drug_event/` (486 / 3,913,635,942) and
+`silver_pipeline/` (486 / 3,913,633,244) have **identical object counts and differ by 2,698 bytes**.
+Temporarily expecting the pipeline's total turned the check **red** — while the object count matched.
+That single failure justifies asserting both numbers, and it is why the check would catch the
+fallback artifact being silently replaced by the pipeline's own output.
+
+### Phase 6 — Terraform for the CI role only ✅
+
+`terraform/` manages **exactly two objects**: the phase-4 role and its inline policy. Not the data
+bucket, not production IAM, not the Snowflake storage integration, not dbt or Airflow.
+
+- **Imported, never created.** Declarative `import` blocks so the takeover appears in the plan on the
+  PR; `prevent_destroy = true` on both resources; `iam:CreateRole`/`iam:DeleteRole` explicitly denied
+  to the executor. Acceptance is `Plan: 2 to import, 0 to add, 0 to change, 0 to destroy`.
+- **`de-capstone-terraform`**, OIDC — not the undocumented bootcamp user `terraform-demo`, and not an
+  IAM user at all. Trust pinned with `StringEquals` to the two subjects phase 5 *measured*. Its policy
+  scopes eleven IAM actions to one role ARN and denies everything else; **every `*` in it sits inside
+  a `Deny`.** Policy-simulator verified: it can update that role, **cannot delete it, cannot attach a
+  managed policy to it, and cannot write policy onto itself**.
+- **State** in a dedicated private, versioned, SSE-S3 bucket in `eu-central-1` with
+  `use_lockfile = true` (no DynamoDB), bootstrapped by hand — a backend must exist before
+  `terraform init`.
+- **`apply` is manual** (`workflow_dispatch`), not on merge: the first apply is one to watch.
+
+**Verified (PR #35):** plan `2 to import, 0 to add, 0 to change, 0 to destroy` → apply
+**`2 imported, 0 added, 0 changed, 0 destroyed`** → **second plan `No changes. Your infrastructure
+matches the configuration.`** → S3 contract re-run **486 / 3,913,635,942 green**. The empty second
+plan is the one that matters: it proves the import recorded reality faithfully, not merely
+successfully. Terraform now owns the role **without having changed a byte of it**.
+
+**One failure worth keeping.** The first plan died on
+`AccessDenied: iam:ListOpenIDConnectProviders` — a data source looking the provider up *by URL* needs
+that action, and AWS does not support resource-level permissions for it, so granting it would have
+meant `"Resource": "*"` in an Allow. The fix was to remove the dependency (reference the ARN as a
+literal), not to widen the policy. *The least-privilege policy caught an over-broad dependency in my
+own code.*
+
+**Still to do (optional):** delete `imports.tf` now the import has run; tighten the CI role's trust
+policy from `StringLike "…:*"` to the two exact subjects **through Terraform**, as a reviewed plan
+diff; drop the now-unused `iam:GetOpenIDConnectProvider`. **Branch-protection enforcement remains
+blocked by GitHub's private-repo plan limit** — detection works and was demonstrated.
 
 ## NEXT — Streamlit (the only remaining MVP item)
 Everything upstream is built, run at full scale, and verified end-to-end under orchestration. The
