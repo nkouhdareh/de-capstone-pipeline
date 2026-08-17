@@ -429,6 +429,70 @@ as the local app.
 cutover and `dashboard.py` behind the Plotly rebuild. Full write-up:
 `docs/Layer Explanation/Streamlit.md` Part K.
 
+## CI/CD — GitHub Actions ✅ phases 1–3 (2026-08-17)
+
+Two workflows, six checks, and a Snowflake CI identity that **cannot reach production**. Full
+write-up: `docs/Layer Explanation/CI_CD.md`.
+
+### `.github/workflows/ci.yml` — the static gate (no secrets)
+
+| Job | Catches |
+|---|---|
+| `ruff` | undefined names and real errors. Blocks on `E9,F63,F7,F82`; the full rule set runs with `--exit-zero` so style informs but never blocks |
+| `python syntax` (3.11 + 3.12 matrix) | a broken `pv_pipeline.py` — via `ast.parse`, so the DAG is validated **without installing Airflow** |
+| `secret scan` | private-key blocks, `AKIA…` ids, and assigned secret values. Reports **file and line only**, never the text |
+| `dbt parse` | broken SQL or Jinja in all 10 models — with **no warehouse connection** |
+
+**The secret scan was demonstrated refusing a credential:** a deliberate `SNOWFLAKE_PASSWORD = "…"`
+committed to a branch turned the check **red in 7 seconds**, naming `file:line` and printing nothing.
+Removing it turned it green. *A gate you have watched stop something is evidence; a green tick is
+decoration.*
+
+This converts the project's strongest security claim — *"no Snowflake password anywhere"*, previously
+proven by one hand-run `grep` — into a test that runs on every change.
+
+### `.github/workflows/dbt-ci.yml` — the warehouse gate
+
+`dbt build --target ci` → **PASS=53 WARN=0 ERROR=0 in 1 m 17 s**, the same result production produces,
+reproduced by a different identity in a different schema from a clean machine.
+
+**A separate Snowflake identity, not a second key on `DE_CAPSTONE_SVC`:**
+
+| | `DE_CAPSTONE_CI` |
+|---|---|
+| Auth | own key pair in `D:/capstone/.keys-ci/`, `TYPE = SERVICE` |
+| Grants | **8 total** — `USAGE` on warehouse/database/`RAW`, `SELECT` on the two RAW tables, `USAGE`+`CREATE TABLE`+`CREATE VIEW` on `DBT_CI` |
+| On `DBT_DEV` | **nothing** |
+| On RAW | **read only** — no `INSERT`, no `TRUNCATE` |
+
+`DE_CAPSTONE_SVC` owns `DBT_DEV` and can truncate RAW, so reusing it would have made isolation a
+*configuration* guarantee — one `schema:` line. With a separate role it is a **privilege** guarantee:
+a profile typo returns a permission error instead of overwriting the marts.
+
+**Proven, not asserted:** acting as `DE_CAPSTONE_CI_ROLE`, `SELECT` on `RAW.SILVER_DRUG_EVENT`
+succeeded (45,030,932) and `SELECT` on `DBT_DEV.DIM_DRUG` **failed with "not authorized"**.
+
+Revocation is independent: `DROP USER DE_CAPSTONE_CI` removes CI entirely and leaves Airflow, both
+loaders and the Streamlit app working.
+
+### Pull-request workflow
+
+Two PRs, both merged after green checks. A branch ruleset `protect main` requires all six checks —
+**configured but not enforced**, because GitHub does not apply rulesets to private repositories
+without a Team plan. It would activate unchanged if the repo became public or moved to an org.
+
+> *The workflow **detects**; branch protection **enforces**. Detection works today and was
+> demonstrated; enforcement is a plan constraint, not a design gap.*
+
+### Recurring lesson: privileges are not implied by ownership
+
+Three separate times — `CREATE STREAMLIT` not implied by owning `DBT_DEV`; `ACCOUNTADMIN` unable to
+read `DBT_CI` because **owning a role is not being a member of it**; `CREATE TABLE` needing its own
+grant. Snowflake separates ownership, membership and privilege.
+
+**Still to do:** phase 4 (capstone-owned AWS OIDC role), phase 5 (S3 contract check on the 486-object
+fallback prefix), phase 6 (Terraform for the CI IAM role only).
+
 ## NEXT — Streamlit (the only remaining MVP item)
 Everything upstream is built, run at full scale, and verified end-to-end under orchestration. The
 dashboard reads tables that **already exist**; nothing new has to be computed.

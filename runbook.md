@@ -326,6 +326,69 @@ Spark job, or edit `pv_pipeline.py` (`upload_s3` is parsed when *it* starts).
 **Ports:** Jupyter `8888` · Airflow `8080` · dbt docs `8081` (default 8080 clashes with Airflow) ·
 Streamlit `8501`. Snowflake is **not** localhost — it's `app.snowflake.com`.
 
+### CI/CD — GitHub Actions
+
+**Two workflows. Neither can alter production.** Full detail: `docs/Layer Explanation/CI_CD.md`.
+
+| Workflow | Runs on | Jobs |
+|---|---|---|
+| `ci.yml` | every push to `main` and every PR | `ruff` · `python syntax (3.11)` · `python syntax (3.12)` · `secret scan` · `dbt parse` |
+| `dbt-ci.yml` | PR/push **only when `de_capstone/**` changes**, plus manual dispatch | `dbt build into DBT_CI` |
+
+**Working method — always via a branch and PR:**
+
+```bash
+git checkout -b ci/<what-changed>
+```
+
+```bash
+git push -u origin ci/<what-changed>
+```
+
+Open the PR, wait for the checks, merge only when green. Pushing to `main` works (the ruleset is not
+enforced on a private repo) but bypasses the gate.
+
+**Validate workflow YAML before pushing:**
+
+```bash
+.venv-dbt/Scripts/python.exe -c "import yaml; yaml.safe_load(open('.github/workflows/dbt-ci.yml')); print('YAML OK')"
+```
+
+Catches indentation. **Does not catch GitHub expression errors** — it accepted a file GitHub later
+rejected. First filter, not the gate.
+
+**Confirm CI touched nothing in production** (Snowsight, `ACCOUNTADMIN`):
+
+```sql
+SELECT max(_loaded_at) FROM DE_CAPSTONE.DBT_DEV.FCT_SIGNAL_METRICS;
+```
+
+Unchanged from the last Airflow run = `DBT_DEV` was not rebuilt. That is the check that matters.
+
+```sql
+SELECT count(*) FROM DE_CAPSTONE.DBT_CI.FCT_REPORT_DRUG_REACTION;   -- 45,030,932
+```
+
+*If `ACCOUNTADMIN` gets "insufficient privileges" on `DBT_CI`, the CI role owns those tables and was
+never granted upward:* `GRANT ROLE DE_CAPSTONE_CI_ROLE TO ROLE ACCOUNTADMIN;` — gives CI nothing
+extra, only lets you inspect its work.
+
+**Revoke CI access** (production unaffected):
+
+```sql
+ALTER USER DE_CAPSTONE_CI UNSET RSA_PUBLIC_KEY;   -- disable
+DROP USER DE_CAPSTONE_CI;                          -- remove entirely
+```
+
+**Expected gates:** `ci.yml` five checks green in under a minute · `dbt build` **PASS=53** in ~1 m 20 s
+· schemas targeted `['DBT_CI', 'DBT_CI_DBT_TEST__AUDIT']`.
+
+**CI secrets live in the GitHub environment `ci`** — `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_CI_USER`,
+`SNOWFLAKE_CI_PRIVATE_KEY`. The CI key pair is `D:/capstone/.keys-ci/` — **never** the production key
+in `D:/capstone/.keys/`.
+
+---
+
 ### Before a destructive run — capture baselines
 
 A `{"months":"all"}` run is destructive downstream: `upload_s3` mirrors with `--delete` and
