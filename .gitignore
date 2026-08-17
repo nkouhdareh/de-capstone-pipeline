@@ -4,6 +4,7 @@
 !.env.example
 *.pem
 *.key
+*.p8
 credentials*
 secrets*
 profiles.yml
