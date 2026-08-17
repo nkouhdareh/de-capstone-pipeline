@@ -95,15 +95,19 @@ jobs:
       - name: dbt build
         run: dbt build --target ci
 
-      # Reads the manifest and fails if anything resolved to another schema.
-      - name: Assert every node targeted DBT_CI
+      # Reads the manifest and fails if anything resolved outside the DBT_CI
+      # namespace. dbt assigns test nodes a custom schema (dbt_test__audit),
+      # which the default naming rule renders as DBT_CI_DBT_TEST__AUDIT. It is
+      # only ever created if a test fails with store_failures enabled.
+      - name: Assert every node targeted the DBT_CI namespace
         run: |
           python - <<'PY'
           import json, sys
           manifest = json.load(open("target/manifest.json"))
           schemas = {n["schema"].upper() for n in manifest["nodes"].values()}
           print("schemas targeted:", sorted(schemas))
-          if schemas - {"DBT_CI"}:
-              sys.exit("FAIL: a node targeted a schema other than DBT_CI")
-          print("OK - every node targeted DBT_CI")
+          outside = {s for s in schemas if not s.startswith("DBT_CI")}
+          if outside:
+              sys.exit(f"FAIL: nodes targeted schemas outside DBT_CI: {sorted(outside)}")
+          print("OK - every node targeted the DBT_CI namespace")
           PY
