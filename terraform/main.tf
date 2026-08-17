@@ -1,7 +1,12 @@
 # Shared account infrastructure, created before this project and used by other
-# repositories. Read only - Terraform must never own or replace it.
-data "aws_iam_openid_connect_provider" "github" {
-  url = "https://token.actions.githubusercontent.com"
+# repositories. Terraform must never own or replace it.
+#
+# Referenced by ARN rather than by a data source on purpose: looking the provider
+# up by URL makes the AWS provider call iam:ListOpenIDConnectProviders, and that
+# action does not support resource-level permissions - granting it would mean
+# "Resource": "*" in an Allow statement, to resolve a value that never changes.
+locals {
+  github_oidc_provider_arn = "arn:aws:iam::617371012792:oidc-provider/token.actions.githubusercontent.com"
 }
 
 # The role assumed by .github/workflows/s3-contract.yml.
@@ -24,7 +29,7 @@ resource "aws_iam_role" "github_actions" {
         Sid    = "GitHubOIDCDeCapstoneRepoOnly"
         Effect = "Allow"
         Principal = {
-          Federated = data.aws_iam_openid_connect_provider.github.arn
+          Federated = local.github_oidc_provider_arn
         }
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
