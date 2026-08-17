@@ -28,7 +28,7 @@ jobs:
       BUCKET: de-capstone-pv-617371012792
       PREFIX: silver/drug_event/
       EXPECTED_OBJECTS: "486"
-      EXPECTED_BYTES: "3913633244"
+      EXPECTED_BYTES: "3913635942"
 
     steps:
       # Printed before the assume, so a trust-policy failure still reports the
