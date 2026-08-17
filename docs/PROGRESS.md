@@ -443,6 +443,7 @@ Snowflake password exists anywhere in the project. Full write-up: `docs/Layer Ex
 | `python syntax` (3.11 + 3.12 matrix) | a broken `pv_pipeline.py` — via `ast.parse`, so the DAG is validated **without installing Airflow** |
 | `secret scan` | private-key blocks, `AKIA…` ids, and assigned secret values. Reports **file and line only**, never the text |
 | `dbt parse` | broken SQL or Jinja in all 10 models — with **no warehouse connection** |
+| `pytest` | drift in normalisation (TR-37) or the metric formulas (TR-38) — **21 tests**, pure Python, no warehouse |
 
 **The secret scan was demonstrated refusing a credential:** a deliberate `SNOWFLAKE_PASSWORD = "…"`
 committed to a branch turned the check **red in 7 seconds**, naming `file:line` and printing nothing.
@@ -594,7 +595,13 @@ reproduces **clozapine → neutropenia, PRR 35.9, 5,571 cases**. Port **8501** (
 - *Optional:* trim `build_silver`'s log volume (it forwards every Spark INFO line — invaluable for a
   10-minute job, unwieldy for a 5-hour one); a scheduled rather than manual trigger (`dim_date` already
   auto-extends for this); CI.
-- pytest TR-37 (normalisation) / TR-38 (metrics) — dbt covers TR-38 in-warehouse; Python copies in `dbt_reference/tests/`.
+- ✅ **pytest TR-37 / TR-38 — done (issue #24 closed).** The Python tests moved out of the git-ignored
+  `dbt_reference/tests/` into **`tests/`** and now run as a sixth `ci.yml` check: **21 passed**, no
+  warehouse and no credentials. TR-38's fixture is `de_capstone/seeds/signal_worked_example.csv` — the
+  **same seed the dbt test asserts on in Snowflake**, so the Python formulas, the seed and the macro
+  must all agree. **pytest rather than a dbt test on purpose:** a new dbt test would have moved
+  `42/42` and `PASS=53`, both frozen figures. *(TR-37 tests a Python mirror of the macro: it proves the
+  logic, not the SQL implementation.)*
 
 ## How to run (quick)
 - **Explore:** `docker compose up` → http://localhost:8888 → `work/01_explore_drug_event.ipynb`. First cache JSON→Parquet (`/home/jovyan/dq_cache`) for speed. Full detail + failure fixes in `runbook.md`.

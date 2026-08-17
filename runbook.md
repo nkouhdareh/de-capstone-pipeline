@@ -332,7 +332,7 @@ Streamlit `8501`. Snowflake is **not** localhost — it's `app.snowflake.com`.
 
 | Workflow | Runs on | Jobs |
 |---|---|---|
-| `ci.yml` | every push to `main` and every PR | `ruff` · `python syntax (3.11)` · `python syntax (3.12)` · `secret scan` · `dbt parse` |
+| `ci.yml` | every push to `main` and every PR | `ruff` · `python syntax (3.11)` · `python syntax (3.12)` · `secret scan` · `dbt parse` · `pytest` |
 | `dbt-ci.yml` | PR/push **only when `de_capstone/**` changes**, plus manual dispatch | `dbt build into DBT_CI` |
 | `s3-contract.yml` | every PR, every push to `main`, plus manual dispatch (**no paths filter** — the artifact lives in S3, not in the repo) | `verify the protected S3 prefix` |
 | `terraform.yml` | PR when `terraform/**` changes; **apply only via manual dispatch** with `action=apply` | `terraform` (fmt · init · validate · plan · optional apply) |
@@ -382,8 +382,19 @@ ALTER USER DE_CAPSTONE_CI UNSET RSA_PUBLIC_KEY;   -- disable
 DROP USER DE_CAPSTONE_CI;                          -- remove entirely
 ```
 
-**Expected gates:** `ci.yml` five checks green in under a minute · `dbt build` **PASS=53** in ~1 m 20 s
-· schemas targeted `['DBT_CI', 'DBT_CI_DBT_TEST__AUDIT']`.
+**Expected gates:** `ci.yml` six checks green in under a minute · `pytest` **21 passed** ·
+`dbt build` **PASS=53** in ~1 m 20 s · schemas targeted `['DBT_CI', 'DBT_CI_DBT_TEST__AUDIT']`.
+
+**Run the unit tests locally** — pytest lives in `.venv` (not `.venv-dbt`, which has no pytest):
+
+```bash
+cd /d/capstone/de-capstone && .venv/Scripts/python.exe -m pytest tests -q
+```
+
+`tests/test_drug_normalisation.py` (TR-37) checks the normalisation logic over real FAERS variants;
+`tests/test_signal_metrics.py` (TR-38) checks PRR/ROR/ROR-CI/χ² against
+`de_capstone/seeds/signal_worked_example.csv` — the same seed the dbt test asserts on in Snowflake.
+Neither needs a warehouse, Docker or credentials.
 
 **CI secrets live in the GitHub environment `ci`** — `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_CI_USER`,
 `SNOWFLAKE_CI_PRIVATE_KEY`. The CI key pair is `D:/capstone/.keys-ci/` — **never** the production key
@@ -790,7 +801,7 @@ MSYS_NO_PATHCONV=1 docker exec -e SILVER_OUT=/home/jovyan/silver/smoke_2023_01 -
 Next: Airflow — `airflow/.env` → `airflow/docker-compose.yaml` → `airflow/dags/pv_pipeline.py` → one-month DAG smoke → cutover → full 24-month → Streamlit. Full guide: `docs/Layer Explanation/Airflow.md`.
 
 ### Still TODO (not built - core-first)
-- pytest TR-37 (normalisation) / TR-38 (metrics) — dbt covers TR-38 in-warehouse; Python copies live in `dbt_reference/tests/`.
+- ✅ **pytest TR-37 / TR-38 — done.** Now in `tests/`, run by the `pytest` job in `ci.yml` (**21 passed**). `dbt_reference/tests/` keeps the original copies.
 - S3 external stage (TR-09; currently internal stage — documented deviation), Airflow DAGs, Streamlit.
 
 ### Reference "answer key"
