@@ -1,0 +1,1 @@
+SNOWFLAKE_PASSWORD = "hunter2horsebattery"
