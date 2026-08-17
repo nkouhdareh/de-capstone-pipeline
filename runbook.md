@@ -328,12 +328,14 @@ Streamlit `8501`. Snowflake is **not** localhost — it's `app.snowflake.com`.
 
 ### CI/CD — GitHub Actions
 
-**Two workflows. Neither can alter production.** Full detail: `docs/Layer Explanation/CI_CD.md`.
+**Four workflows. None can alter production.** Full detail: `docs/Layer Explanation/CI_CD.md`.
 
 | Workflow | Runs on | Jobs |
 |---|---|---|
 | `ci.yml` | every push to `main` and every PR | `ruff` · `python syntax (3.11)` · `python syntax (3.12)` · `secret scan` · `dbt parse` |
 | `dbt-ci.yml` | PR/push **only when `de_capstone/**` changes**, plus manual dispatch | `dbt build into DBT_CI` |
+| `s3-contract.yml` | every PR, every push to `main`, plus manual dispatch (**no paths filter** — the artifact lives in S3, not in the repo) | `verify the protected S3 prefix` |
+| `terraform.yml` | PR when `terraform/**` changes; **apply only via manual dispatch** with `action=apply` | `terraform` (fmt · init · validate · plan · optional apply) |
 
 **Working method — always via a branch and PR:**
 
@@ -386,6 +388,66 @@ DROP USER DE_CAPSTONE_CI;                          -- remove entirely
 **CI secrets live in the GitHub environment `ci`** — `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_CI_USER`,
 `SNOWFLAKE_CI_PRIVATE_KEY`. The CI key pair is `D:/capstone/.keys-ci/` — **never** the production key
 in `D:/capstone/.keys/`.
+
+### AWS access from CI — OIDC, no stored keys
+
+**There is no `AWS_ACCESS_KEY_ID` secret in this repository.** GitHub Actions mints an OIDC token per
+job and exchanges it for short-lived STS credentials.
+
+| Identity | Purpose | May do |
+|---|---|---|
+| `de-capstone-github-actions` | the S3 contract check | `ListBucket` + `GetObject` on `silver/drug_event/` only, capped by a permissions boundary |
+| `de-capstone-terraform` | `terraform plan` / `apply` | the state bucket, and IAM on the **one** role ARN above. Cannot create or delete any identity, cannot modify itself |
+| `de-capstone-airflow-uploader` (pre-existing IAM **user**) | Airflow's upload | write `silver_pipeline/` only |
+
+**Run the S3 contract check on demand:**
+
+```bash
+gh workflow run "S3 contract" --ref main
+```
+
+```bash
+gh run view $(gh run list --workflow "S3 contract" --branch main --limit 1 --json databaseId --jq '.[0].databaseId') --log | grep -E "sub:|objects:|bytes:|OK -|AccessDenied"
+```
+
+**Expected gates:** `objects: 486` · `bytes: 3,913,635,942` · `OK - the fallback Silver artifact is
+byte-for-byte unchanged` · no `AccessDenied`. Runs in 9–17 s.
+
+The subject printed before the assume should read
+`repo:nkouhdareh@263947291/de-capstone-pipeline@1320110552:` followed by `pull_request` or
+`ref:refs/heads/main`. **That `@`-with-numbers form is GitHub's immutable subject claim, not a typo** —
+see the failure playbook.
+
+### Terraform — the CI role only
+
+Managed objects: `de-capstone-github-actions` and its inline policy. **Nothing else** — not the data
+bucket, production IAM, the Snowflake storage integration, dbt or Airflow.
+
+**Before pushing** (no AWS credentials needed — `-backend=false` skips the S3 backend):
+
+```bash
+cd /d/capstone/de-capstone/terraform && terraform fmt && terraform init -backend=false && terraform validate
+```
+
+**Read the plan from a PR run:**
+
+```bash
+gh run view $(gh run list --workflow "Terraform" --limit 1 --json databaseId --jq '.[0].databaseId') --log | grep -E "Plan:|will be imported|must be replaced|will be destroyed|Error"
+```
+
+**Expected gate:** `Plan: 2 to import, 0 to add, 0 to change, 0 to destroy.` Anything else means the
+**code** is wrong, not the role — fix the config, never the live resource.
+
+**Apply — manual only, never on merge:**
+
+```bash
+gh workflow run "Terraform" --ref main -f action=apply
+```
+
+Then re-plan (must be empty) and re-run the S3 contract (must be green). State lives in
+`s3://de-capstone-tfstate-617371012792/ci-role/terraform.tfstate`, versioned, with `use_lockfile`
+(no DynamoDB). Terraform **1.15.8**, AWS provider pinned by `terraform/.terraform.lock.hcl` to
+**6.60.0**.
 
 ---
 
@@ -578,6 +640,11 @@ validate the transform before the full run.)*
 | The monthly table is empty while the all-time table has rows | The all-time case floor (default **100**) was applied at monthly grain, where a typical `a` is single digits | Use the separate **"Minimum cases (a) - monthly"** input (default 5). Two different floors for two different grains is deliberate, not a duplicate control | Yes |
 | The Airflow Graph/Grid view shows tasks that never ran in the run you are inspecting (empty cells, or tasks whose timestamps make the dependency order impossible) | **Airflow 2.x has no per-run DAG versioning.** The scheduler stores one serialised DAG — the latest parse — and the UI renders that structure over *every* historical run. A run from before a DAG edit is displayed with today's graph | Ignore the graph for historical runs. Use `docker compose exec airflow-scheduler airflow tasks states-for-dag-run pv_pipeline "<run_id>"` — it lists only the task **instances** that actually existed, with start/end times. Cross-check against the run's Event Log. Per-run versioning arrives in Airflow 3 | Yes |
 | Streamlit crashes with `StreamlitDuplicateElementId: There are multiple plotly_chart elements with the same auto-generated ID` | **Tabs are not lazy** — every tab's code runs on every rerun, so charts in different tabs coexist. Streamlit derives an element's ID from its type *and* parameters, so two charts that happen to receive identical data collide. Hit on the enhanced dashboard when Drug=CLOZAPINE + Reaction=(any) + Rank by=PRR made the Signal Explorer and Drug Profile bar charts byte-identical | Give every chart and table an explicit `key="..."`, so the ID no longer depends on the data. Applied to all 10 `st.plotly_chart` / `st.dataframe` calls in `app/dashboard_enhanced.py`, not only the two that collided | Yes |
+| A GitHub Actions job fails with `Not authorized to perform sts:AssumeRoleWithWebIdentity`, on a trust policy that saved without error and looks correct | **GitHub's immutable subject claims.** Since 15 July 2026 every *new* repository issues a `sub` containing numeric ids — `repo:<owner>@<owner_id>/<repo>@<repo_id>:<ref>` — so a policy written as `repo:owner/repo:*` matches nothing. This repo was created 2026-08-02, so it is affected. **IAM validates syntax, not reachability** | Read the real subject rather than guessing: the `Show the OIDC subject` step in `s3-contract.yml` decodes the token and prints `sub`/`aud` **before** the assume. Get the ids with `gh api user --jq .id` (263947291) and `gh api repos/nkouhdareh/de-capstone-pipeline --jq .id` (1320110552). Note the subject differs by event — `:pull_request` vs `:ref:refs/heads/main` — so a policy pinned to one fails on the other | Yes |
+| An S3 read from CI fails with `AccessDenied` although the inline policy looks right | Either the ARN shape (`s3:ListBucket` acts on the **bucket** ARN with no `/*`; `s3:GetObject` on the **object** ARN with `/*`), the `s3:prefix` condition not matching the prefix the CLI actually sends, or the **permissions boundary** capping an action the inline policy grants | Check with the **IAM policy simulator** (IAM → Roles → the role → Simulate) — it evaluates the identity policy *and* the boundary, entirely inside AWS, with no workflow run needed. **Always paste an explicit resource ARN**; an empty or `*` resource makes correctly-scoped allows come back denied | Yes |
+| `gh run view <id> --log` returns `HTTP 404` on `/actions/runs/<id>/jobs`, or the browser shows "This workflow does not exist" for a file that is on `main`, or the API returns `503` with a unicorn page | A **GitHub-side incident**. Endpoints degrade independently, so the runs API can answer while the jobs API 404s. The red text of a `gh` error reads like a red *check* and is not one | Trust the `conclusion` field, not the CLI's error: `gh run list --workflow "<name>" --limit 1 --json databaseId,conclusion,event --jq '.[0]'`. Check <https://www.githubstatus.com>. If a run never starts once GitHub recovers, re-trigger with `git commit --allow-empty -m "ci: re-trigger" && git push`. **Verify on the other system meanwhile** — the IAM policy simulator confirms AWS-side behaviour with GitHub down | Yes |
+| `terraform plan` fails with `AccessDenied: iam:ListOpenIDConnectProviders` | A `data "aws_iam_openid_connect_provider"` block looks the provider up **by URL**, and resolving a URL to an ARN calls `ListOpenIDConnectProviders` — not `GetOpenIDConnectProvider`. That action **does not support resource-level permissions**, so granting it means `"Resource": "*"` in an Allow statement | **Remove the dependency, don't widen the policy.** Reference the provider by ARN in a `locals` block (`arn:aws:iam::617371012792:oidc-provider/token.actions.githubusercontent.com`) and delete the data source. The string is identical, so an imported trust policy still matches and the plan stays `0 to change` | Yes |
+| `terraform plan` shows `1 to change` on an imported resource that nobody edited | The config does not match the live resource exactly. Usual culprits: a `tags` block the role does not have (or missing one it does), `max_session_duration` written out when 3600 is the provider default, a `description` that differs by a character, or an omitted `permissions_boundary` | **Fix the code, never the live resource.** Author the config from the console's actual values — trust policy JSON, inline policy body, boundary ARN, description, tags — then re-plan. The acceptance gate is `Plan: 2 to import, 0 to add, 0 to change, 0 to destroy` | Yes |
 
 ---
 
