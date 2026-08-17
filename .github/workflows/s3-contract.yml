@@ -1,0 +1,94 @@
+name: S3 contract
+
+# No paths filter on purpose: the artifact this checks lives in S3, not in
+# the repository. It can change without a single file here changing.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: s3-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  contract:
+    name: verify the protected S3 prefix
+    runs-on: ubuntu-latest
+
+    # Literals, not secrets: a reviewer must be able to read the diff and see
+    # exactly which prefix is checked and which numbers are demanded.
+    env:
+      BUCKET: de-capstone-pv-617371012792
+      PREFIX: silver/drug_event/
+      EXPECTED_OBJECTS: "486"
+      EXPECTED_BYTES: "3913635942"
+
+    steps:
+      # Printed before the assume, so a trust-policy failure still reports the
+      # exact subject GitHub issued. Only sub and aud - never the token.
+      - name: Show the OIDC subject this repository issues
+        run: |
+          curl -sS \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" \
+          | python3 -c "
+          import sys, json, base64
+          payload = json.load(sys.stdin)['value'].split('.')[1]
+          payload += '=' * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+          print('sub:', claims['sub'])
+          print('aud:', claims['aud'])
+          "
+
+      - name: Assume the capstone role via OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::617371012792:role/de-capstone-github-actions
+          aws-region: eu-central-1
+
+      - name: Who am I?
+        run: aws sts get-caller-identity
+
+      # The role holds s3:ListBucket and s3:GetObject only, scoped to this one
+      # prefix. There is no PutObject, DeleteObject or multipart permission, so
+      # this job cannot alter the artifact it is verifying.
+      - name: Verify the fallback prefix is unchanged
+        run: |
+          aws s3api list-objects-v2 \
+            --bucket "$BUCKET" \
+            --prefix "$PREFIX" \
+            --output json > objects.json
+
+          python3 - <<'PY'
+          import json, os, sys
+
+          objects = json.load(open("objects.json")).get("Contents", [])
+          count = len(objects)
+          total = sum(o["Size"] for o in objects)
+
+          expected_count = int(os.environ["EXPECTED_OBJECTS"])
+          expected_total = int(os.environ["EXPECTED_BYTES"])
+
+          print(f"prefix:  s3://{os.environ['BUCKET']}/{os.environ['PREFIX']}")
+          print(f"objects: {count:>13,}   expected {expected_count:>13,}")
+          print(f"bytes:   {total:>13,}   expected {expected_total:>13,}")
+
+          problems = []
+          if count != expected_count:
+              problems.append(f"object count {count} != {expected_count}")
+          if total != expected_total:
+              problems.append(f"total bytes {total} != {expected_total}")
+
+          if problems:
+              sys.exit("FAIL - the protected fallback prefix has changed: "
+                       + "; ".join(problems))
+
+          print("OK - the fallback Silver artifact is byte-for-byte unchanged")
+          PY
