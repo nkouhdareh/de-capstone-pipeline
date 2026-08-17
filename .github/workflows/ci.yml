@@ -143,3 +143,23 @@ jobs:
       # parse resolves every ref(), source(), macro and var without connecting.
       - name: dbt parse
         run: dbt parse
+
+  pytest:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install pytest
+        run: pip install pytest
+
+      # Pure Python: no warehouse, no Docker, no credentials, no Spark.
+      # TR-37 - normalisation logic over real FAERS name variants.
+      # TR-38 - metric formulas checked against de_capstone/seeds/signal_worked_example.csv,
+      #         the same fixture the dbt test asserts on in Snowflake.
+      - name: Run unit tests
+        run: pytest tests -q        
