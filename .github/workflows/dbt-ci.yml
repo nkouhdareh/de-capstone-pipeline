@@ -1,0 +1,113 @@
+name: dbt CI
+
+on:
+  pull_request:
+    paths:
+      - 'de_capstone/**'
+      - '.github/workflows/dbt-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'de_capstone/**'
+      - '.github/workflows/dbt-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dbt-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  build:
+    name: dbt build into DBT_CI
+    runs-on: ubuntu-latest
+
+    # Without this line the environment secrets are invisible to the job.
+    environment: ci
+
+    defaults:
+      run:
+        working-directory: de_capstone
+
+    env:
+      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_CI_USER: ${{ secrets.SNOWFLAKE_CI_USER }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dbt-snowflake (pinned to the project version)
+        run: pip install "dbt-snowflake==1.12.0"
+
+      # The key exists only on this runner, only for this job. It is never
+      # echoed; GitHub masks the value in logs regardless.
+      # $RUNNER_TEMP is the environment-variable form of the runner.temp
+      # context, and unlike the context it is available inside a step.
+      - name: Write the CI private key
+        env:
+          SNOWFLAKE_CI_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_CI_PRIVATE_KEY }}
+        run: |
+          key_path="$RUNNER_TEMP/rsa_key_ci.p8"
+          printf '%s\n' "$SNOWFLAKE_CI_PRIVATE_KEY" > "$key_path"
+          chmod 600 "$key_path"
+          # Confirm PKCS#8 without printing anything from the file.
+          test "$(grep -c 'BEGIN PRIVATE KEY' "$key_path")" = "1" \
+            || { echo "CI key is not PKCS#8"; exit 1; }
+          # Publish the path to later steps so dbt's env_var() can read it.
+          echo "SNOWFLAKE_CI_KEY_PATH=$key_path" >> "$GITHUB_ENV"
+
+      # schema, role, database and warehouse are literals on purpose: a
+      # reviewer can see in the diff exactly where CI writes.
+      - name: Write the CI profile
+        run: |
+          mkdir -p "$HOME/.dbt"
+          cat > "$HOME/.dbt/profiles.yml" <<'PROFILE'
+          de_capstone:
+            target: ci
+            outputs:
+              ci:
+                type: snowflake
+                account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+                user: "{{ env_var('SNOWFLAKE_CI_USER') }}"
+                private_key_path: "{{ env_var('SNOWFLAKE_CI_KEY_PATH') }}"
+                role: DE_CAPSTONE_CI_ROLE
+                database: DE_CAPSTONE
+                warehouse: DE_CAPSTONE_WH
+                schema: DBT_CI
+                threads: 4
+          PROFILE
+
+      - name: dbt deps
+        run: dbt deps
+
+      # Fails fast with a clear message if the key or account is wrong.
+      - name: dbt debug
+        run: dbt debug --target ci
+
+      # 10 models + 1 seed + 42 tests. Expect PASS=53.
+      - name: dbt build
+        run: dbt build --target ci
+
+      # Reads the manifest and fails if anything resolved outside the DBT_CI
+      # namespace. dbt assigns test nodes a custom schema (dbt_test__audit),
+      # which the default naming rule renders as DBT_CI_DBT_TEST__AUDIT. It is
+      # only ever created if a test fails with store_failures enabled.
+      - name: Assert every node targeted the DBT_CI namespace
+        run: |
+          python - <<'PY'
+          import json, sys
+          manifest = json.load(open("target/manifest.json"))
+          schemas = {n["schema"].upper() for n in manifest["nodes"].values()}
+          print("schemas targeted:", sorted(schemas))
+          outside = {s for s in schemas if not s.startswith("DBT_CI")}
+          if outside:
+              sys.exit(f"FAIL: nodes targeted schemas outside DBT_CI: {sorted(outside)}")
+          print("OK - every node targeted the DBT_CI namespace")
+          PY
