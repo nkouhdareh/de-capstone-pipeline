@@ -35,7 +35,6 @@ jobs:
     env:
       SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
       SNOWFLAKE_CI_USER: ${{ secrets.SNOWFLAKE_CI_USER }}
-      SNOWFLAKE_CI_KEY_PATH: ${{ runner.temp }}/rsa_key_ci.p8
 
     steps:
       - uses: actions/checkout@v5
@@ -49,15 +48,20 @@ jobs:
 
       # The key exists only on this runner, only for this job. It is never
       # echoed; GitHub masks the value in logs regardless.
+      # $RUNNER_TEMP is the environment-variable form of the runner.temp
+      # context, and unlike the context it is available inside a step.
       - name: Write the CI private key
         env:
           SNOWFLAKE_CI_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_CI_PRIVATE_KEY }}
         run: |
-          printf '%s\n' "$SNOWFLAKE_CI_PRIVATE_KEY" > "$SNOWFLAKE_CI_KEY_PATH"
-          chmod 600 "$SNOWFLAKE_CI_KEY_PATH"
+          key_path="$RUNNER_TEMP/rsa_key_ci.p8"
+          printf '%s\n' "$SNOWFLAKE_CI_PRIVATE_KEY" > "$key_path"
+          chmod 600 "$key_path"
           # Confirm PKCS#8 without printing anything from the file.
-          test "$(grep -c 'BEGIN PRIVATE KEY' "$SNOWFLAKE_CI_KEY_PATH")" = "1" \
+          test "$(grep -c 'BEGIN PRIVATE KEY' "$key_path")" = "1" \
             || { echo "CI key is not PKCS#8"; exit 1; }
+          # Publish the path to later steps so dbt's env_var() can read it.
+          echo "SNOWFLAKE_CI_KEY_PATH=$key_path" >> "$GITHUB_ENV"
 
       # schema, role, database and warehouse are literals on purpose: a
       # reviewer can see in the diff exactly where CI writes.
