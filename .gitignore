@@ -17,6 +17,9 @@ data/
 *.parquet
 *.zip
 !docs/**/*.json
+!docs/**/*.png
+!docs/**/*.svg
+!docs/**/*.pptx
 !de_capstone/seeds/signal_worked_example.csv
 
 # ---- python ----
