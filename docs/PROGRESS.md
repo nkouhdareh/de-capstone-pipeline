@@ -564,7 +564,36 @@ policy from `StringLike "…:*"` to the two exact subjects **through Terraform**
 diff; drop the now-unused `iam:GetOpenIDConnectProvider`. **Branch-protection enforcement remains
 blocked by GitHub's private-repo plan limit** — detection works and was demonstrated.
 
+## Presentation and handover assets ✅ (2026-08-19)
+
+Built for the presentation on **24 August 2026**. None of this touches the pipeline — no model,
+macro, table or figure was changed to produce any of it.
+
+| Asset | Path | What it is |
+|---|---|---|
+| Slide deck | `docs/capstone_presentation.pptx` | 17 slides, 16:9, dark mode. Every figure taken from this document |
+| Architecture diagram | `docs/assets/architecture.png` | 1920×1080, dark. Six stages left→right, Airflow above, CI/CD below; solid arrows = data, dashed = control |
+| Dashboard captures | `docs/assets/dashboard_0_kpis.png`<br>`dashboard_1_signals.png`<br>`dashboard_2_table.png`<br>`dashboard_3_trend.png` | Real screenshots from the **hosted** Streamlit app, not mock-ups. How to reproduce them: `runbook.md` → "Presentation assets" |
+| Title image | `docs/assets/FDA.png` | 750×563, transparent |
+| Cost analysis | `docs/Layer Explanation/costs.md` | What the project cost and how it scales (local-only, not committed) |
+| Coach report | `…/capstone_meetings/fourth meeting_Mi_19082026/4th Coach Meeting.md` | What was built since the previous meeting (local only) |
+
+**The one number this section adds:** the whole build cost about **$0.25** of real money plus
+**$42** of Snowflake trial credit. dbt, Airflow, Spark, Docker, Terraform and GitHub Actions are
+$0, because everything that can run locally does — only ~8 GB of the 64 GB Bronze is in the cloud.
+Full breakdown and the 10× scaling table: `costs.md`.
+
+**Two figures worth having at hand for questions**, both visible in the captured screenshots:
+`CLOZAPINE → Death` is **1,848 cases at PRR 1.92 and is *not* flagged**, and `Off label use` is
+1,294 cases at PRR 0.77, also not flagged. That is the evidence the method discriminates rather
+than ranking by volume.
+
 ## NEXT — Streamlit (the only remaining MVP item)
+
+> ✅ **Completed 2026-08-13 (local) and 2026-08-16 (hosted in Snowflake).** This section is kept as
+> the original specification and acceptance criteria; see "Streamlit dashboard" and "Streamlit in
+> Snowflake" above for what was actually delivered.
+
 Everything upstream is built, run at full scale, and verified end-to-end under orchestration. The
 dashboard reads tables that **already exist**; nothing new has to be computed.
 

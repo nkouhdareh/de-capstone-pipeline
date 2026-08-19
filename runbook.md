@@ -429,6 +429,43 @@ The subject printed before the assume should read
 `ref:refs/heads/main`. **That `@`-with-numbers form is GitHub's immutable subject claim, not a typo** —
 see the failure playbook.
 
+### Presentation assets — where they are and how to regenerate them
+
+| Asset | Path |
+|---|---|
+| Slide deck (17 slides, 16:9, dark) | `docs/capstone_presentation.pptx` |
+| Architecture diagram (1920×1080, **dark**) | `docs/assets/architecture.png` |
+| Dashboard captures | `docs/assets/dashboard_0_kpis.png` · `dashboard_1_signals.png` · `dashboard_2_table.png` · `dashboard_3_trend.png` |
+| Title image (transparent) | `docs/assets/FDA.png` |
+| Cost analysis | `docs/Layer Explanation/costs.md` |
+
+**Re-taking the dashboard screenshots.** They come from the **hosted** app — Snowsight → Projects →
+Streamlit → *Drug Safety Signals* — with Snowsight in dark mode, so they sit on a dark slide without
+a panel. Press `F11` for fullscreen, then `Win`+`Shift`+`S` to crop. Exact settings:
+
+| Image | Tab | Sidebar | Capture |
+|---|---|---|---|
+| `dashboard_0_kpis` | any | — | the four-number strip at the top |
+| `dashboard_1_signals` | Signal Explorer | Drug `CLOZAPINE` · Reaction `(any)` · Rank by **`Cases (a)`** | the bar chart with its title |
+| `dashboard_2_table` | Signal Explorer | same, **scroll past the chart** | header row + first 6–8 rows; `Neutropenia 5571 / 35.94` must be row 1 |
+| `dashboard_3_trend` | Drug Profile | Drug `CLOZAPINE` · Reaction **`Neutropenia`** · monthly min `5` | the line chart, scroll to the bottom |
+
+⚠️ **Rank by `Cases (a)`, not PRR.** Ranked by PRR the clozapine head is *Differential white blood
+cell count abnormal* (PRR 1,260 on 212 cases) and Neutropenia falls well down the list — the
+screenshot would then contradict the headline. Also note **Drug Profile always sorts by PRR**
+regardless of the sidebar, which is why the table shot must come from Signal Explorer.
+
+⚠️ **If the monthly trend is empty**, lower **"Minimum cases (a) – monthly"**. The all-time floor
+(100) applied at monthly grain empties the table — a typical monthly `a` is single digits.
+
+**One crop per image.** Do not try to fit the sidebar and a chart into the same capture; the page is
+taller than the screen and the result is a chart cut in half. Keep each image ≥ 950 px wide and do
+not scale it beyond ~1.3× in the deck, or the text inside blurs.
+
+**Rebuilding the deck.** It was generated with `python-pptx`. Verify programmatically before
+presenting: every figure present in `PROGRESS.md`, nothing outside the 0.6" margin, no text box
+overlapping an image, image aspect ratios unchanged, and speaker notes on all 17 slides.
+
 ### Terraform — the CI role only
 
 Managed objects: `de-capstone-github-actions` and its inline policy. **Nothing else** — not the data
