@@ -8,7 +8,7 @@
 credentials*
 secrets*
 profiles.yml
-!dbt/profiles.example.yml
+!de_capstone/profiles.example.yml
 
 # ---- data: never commit ----
 data/
@@ -31,9 +31,9 @@ __pycache__/
 .ipynb_checkpoints/
 
 # ---- dbt ----
-dbt/target/
-dbt/dbt_packages/
-dbt/logs/
+de_capstone/target/
+de_capstone/dbt_packages/
+de_capstone/logs/
 *.log
 
 # ---- airflow ----

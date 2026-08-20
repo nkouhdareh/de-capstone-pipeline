@@ -1,0 +1,28 @@
+# Copy this file to profiles.yml in the same directory, then set the three
+# environment variables below. profiles.yml itself is git-ignored and must
+# never be committed.
+#
+#   cp de_capstone/profiles.example.yml de_capstone/profiles.yml
+#
+# Required environment variables (see .env.example at the repo root):
+#   SNOWFLAKE_ACCOUNT           your Snowflake account identifier
+#   SNOWFLAKE_USER              the service identity, e.g. DE_CAPSTONE_SVC
+#   SNOWFLAKE_PRIVATE_KEY_PATH  path to the RSA private key, OUTSIDE this repo
+#
+# Authentication is key-pair only. Snowflake deprecated password-only sign-in
+# on 2026-08-18, and a TYPE = SERVICE user cannot hold a password. There is no
+# password field here by design.
+
+de_capstone:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      private_key_path: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PATH') }}"
+      role: DE_CAPSTONE_DBT_ROLE
+      warehouse: DE_CAPSTONE_WH
+      database: DE_CAPSTONE
+      schema: DBT_DEV
+      threads: 4

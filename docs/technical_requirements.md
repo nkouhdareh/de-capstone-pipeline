@@ -353,6 +353,7 @@ de-capstone/
 ├── docker-compose.yml              # Spark/Jupyter + dbt containers
 ├── dbt.Dockerfile                  # dbt-snowflake 1.12.0, isolated from Airflow
 ├── .env.example
+├── capstone_project_guide_overview.md   # the course rubric, for reference
 ├── airflow/
 │   ├── docker-compose.yaml         # Airflow 2.10.5, pinned
 │   └── dags/pv_pipeline.py         # the 8-task DAG
@@ -364,10 +365,13 @@ de-capstone/
 │   ├── build_silver.py             # headless PySpark job
 │   ├── load_to_snowflake.py        # rollback loader (internal stage)
 │   ├── load_raw.py                 # one-month smoke loader
-│   └── ddl_raw.sql                 # RAW tables, stages, file formats
+│   ├── ddl_raw.sql                 # RAW tables, stages, file formats
+│   └── PoC/openfda_project/        # week-1 proof of concept (kept for provenance)
 ├── de_capstone/                    # the dbt project
 │   ├── dbt_project.yml             # thresholds as vars
-│   ├── profiles.yml                # env_var() only, no literals
+│   ├── profiles.example.yml        # template — copy to profiles.yml and set 3 env vars
+│   ├── packages.yml                # dbt_utils dependency
+│   ├── package-lock.yml            # locked package versions
 │   ├── macros/
 │   │   ├── normalize_drug_name.sql
 │   │   ├── signal_metrics.sql      # the single metric definition
@@ -384,17 +388,23 @@ de-capstone/
 ├── tests/
 │   ├── test_drug_normalisation.py  # TR-37
 │   └── test_signal_metrics.py      # TR-38
-├── terraform/{main,versions,imports}.tf
+├── terraform/{main,versions,imports}.tf + .terraform.lock.hcl
 ├── notebooks/                      # exploration + Silver reference notebooks
 ├── .github/workflows/{ci,dbt-ci,s3-contract,terraform}.yml
 └── docs/
     ├── business_requirements.md
     ├── technical_requirements.md
     ├── PROGRESS.md
+    ├── capstone_presentation.pptx
     ├── adr/
     ├── assets/                     # architecture diagram, dbt lineage, screenshots
     └── Metadata/                   # field dictionary, source schemas
 ```
+> **Not shown:** dbt scaffold files (`de_capstone/.gitignore`, `de_capstone/README.md`, and
+> five empty-directory `.gitkeep` markers). **Deliberately absent from the repository:**
+> `de_capstone/profiles.yml` and `.env` are git-ignored and must be created locally —
+> `profiles.example.yml` and `.env.example` are the templates. The private key lives
+> outside the repository entirely.
 
 > **Differences from v0.1 §12**, all consequences of decisions recorded elsewhere: DAGs
 > live under `airflow/` (three-stack design, [ADR-010](adr/ADR-010-airflow-triggers-containers.md));
