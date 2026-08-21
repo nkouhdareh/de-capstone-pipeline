@@ -210,7 +210,7 @@ dosage strings, salt forms and punctuation) and then matched **exactly**, in tie
 `rxcui` → generic name → brand name → active ingredient. Ambiguity is never resolved by
 guessing; an unmatched name keeps `drug_key = -1` and is counted.
 
-Resolution runs once per **distinct drug signature** (84,039 of them) rather than once
+Resolution runs once per **distinct drug signature** (84,038 of them) rather than once
 per row — the same answer at a fraction of the cost. Two rates are published because
 they answer different questions: **86.7 % of rows** resolve, but only **10.0 % of
 distinct signatures**. Common drugs resolve; a long tail of typos and rare names does
