@@ -124,7 +124,7 @@ Grain key unique across all 45,030,932. Zero null reactions remain.
 | TR-16 | Names shall be normalised by uppercasing, stripping punctuation, dosage strings and salt forms | 1 | ✅ | `macros/normalize_drug_name.sql`. **Known defect:** stripping mineral salts collapses `sodium chloride` and `calcium chloride` to `CHLORIDE` — measured, documented, not fixed during the freeze |
 | TR-17 | Normalised names shall be matched exactly against `brand_name` and `generic_name` in the NDC directory | 1 | ✅ | Tiers 2 and 3 of four |
 | TR-18 | Unmatched names shall be matched against `openfda.substance_name` and `openfda.rxcui` where present | 2 | ✅ | `rxcui` is tier 1 (most reliable); active ingredient is tier 4 |
-| TR-19 | Names still unresolved shall be retained with `drug_key = -1` and counted; the resolution rate shall be published | 1 | ✅ | **86.7 % of rows** · **10.0 % of 84,039 distinct signatures**. Both published, because they answer different questions |
+| TR-19 | Names still unresolved shall be retained with `drug_key = -1` and counted; the resolution rate shall be published | 1 | ✅ | **86.7 % of rows** · **10.0 % of 84,038 distinct signatures**. Both published, because they answer different questions |
 
 Full order: `rxcui` → normalised generic → brand → active ingredient → unresolved.
 **Ambiguous matches are rejected, never guessed.** Fuzzy matching remains explicitly out of
@@ -145,7 +145,7 @@ scope — [ADR-005](adr/ADR-005-drug-name-resolution-tiers.md).
 | `dim_reaction` | one MedDRA preferred term | ~25k | **18,057** |
 | `dim_reporter` | one (qualification, country) | ~1k | **726** |
 | `dim_date` | one calendar day | ~10k | **731** |
-| `int_drug_resolution` | one distinct drug signature | *(not in v0.1)* | **84,039** |
+| `int_drug_resolution` | one distinct drug signature | *(not in v0.1)* | **84,038** |
 
 The dimension estimates were an order of magnitude high because they assumed the full
 FAERS history rather than a two-year window. The fact table landed inside its range.

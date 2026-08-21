@@ -11,7 +11,7 @@
 FAERS reports carry free-text drug names. The same substance appears as `TYLENOL`,
 `Tylenol 500mg`, `ACETAMINOPHEN`, `PARACETAMOL` and `TYLNOL`. There are **97,789
 distinct raw product names** across 10.4 million drug rows, which the warehouse's
-intermediate layer reduces to **84,039 distinct drug signatures**.
+intermediate layer reduces to **84,038 distinct drug signatures**.
 
 This matters more than it looks. PRR and ROR are ratios of case counts. If one drug's
 cases fragment across five name variants, every one of those variants gets a case count
@@ -50,7 +50,7 @@ Anything still unmatched keeps `drug_key = -1` (Unknown), is **counted, not drop
 and is **excluded from the PRR/ROR models** — an unidentified drug cannot be scored, but
 its rows remain in the atomic fact for auditing.
 
-Resolution executes once per distinct signature (84,039) rather than once per row
+Resolution executes once per distinct signature (84,038) rather than once per row
 (45,030,932): the same answer at a fraction of the cost.
 
 **Two resolution rates are published, because they answer different questions:**

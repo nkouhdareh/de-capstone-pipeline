@@ -397,7 +397,7 @@ disproportionality, and would be handled in the marts by drug-count or `reportty
 | `fct_signal_metrics` | 5,069,399 |
 | `sem_signal_metrics` | 1,240,645 |
 | `dim_drug` / `dim_reaction` / `dim_reporter` / `dim_date` | 4,368 / 18,057 / 726 / 731 |
-| `int_drug_resolution` signatures | 84,039 |
+| `int_drug_resolution` signatures | 84,038 |
 | Row-level drug resolution | 86.7 % |
 | Candidate signals (`is_signal`) | 315,270 (25.4 % of pairs) |
 

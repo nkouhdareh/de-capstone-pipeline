@@ -45,7 +45,7 @@ Operations: `runbook.md` · Decisions: `adr/`
 | dbt models | **10** |
 | dbt tests | **42 passing** · `dbt build` → **PASS=53, WARN=0, ERROR=0** |
 | Python unit tests | **21 passing** |
-| `int_drug_resolution` signatures | 84,039 |
+| `int_drug_resolution` signatures | 84,038 |
 | Row-level drug resolution | **86.7 %** · signature-level 10.0 % |
 | `dim_drug` / `dim_reaction` / `dim_reporter` / `dim_date` | 4,368 / 18,057 / 726 / 731 |
 | `fct_report_drug_reaction` | 45,030,932 |
@@ -139,7 +139,7 @@ dbt project in `de_capstone/` with its own `.venv-dbt`. Snowflake: role
   COPY; truncates and removes the stage itself). At this point still a documented deviation
   from TR-09.
 - **10 models built:** `stg_drug_event`, `stg_drug_ndc` → `int_drug_resolution`
-  (NDC join, `rxcui` → generic → brand → ingredient, **exact-only**; 84,039 signatures) →
+  (NDC join, `rxcui` → generic → brand → ingredient, **exact-only**; 84,038 signatures) →
   `dim_drug` (4,368; `drug_key = -1` = Unknown), `dim_reaction` (18,057), `dim_reporter`
   (726), `dim_date` (731, derived from the data), `fct_report_drug_reaction` (45,030,932,
   clustered on `receive_date`, all four dimensions FK-tested) → `sem_signal_metrics`
