@@ -65,3 +65,4 @@ docs/GPT Secrests/
 docs/Layer Explanation/
 scripts/PoC/*.md
 scripts/PoC/*.docx
+app/db.py.bak
