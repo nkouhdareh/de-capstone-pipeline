@@ -11,7 +11,7 @@ built in [ADR-015](../docs/adr/ADR-015-retrieval-extension-not-built.md).
 | Phase | State |
 |---|---|
 | Scaffold | done |
-| 0 Explore the label corpus | in progress |
+| 0 Explore the label corpus | **done** |
 | 1 Corpus scoping and chunking | not started |
 | 2 Gold set and evaluation harness | not started |
 | 3 Dense retrieval baseline | not started |
@@ -20,6 +20,35 @@ built in [ADR-015](../docs/adr/ADR-015-retrieval-extension-not-built.md).
 | 6 Generation and Streamlit tab (ADR-008) | not started |
 
 Nothing here is wired into the dashboard yet.
+
+## What Phase 0 measured
+
+A full pass over all 261,258 Bronze label records (61 s), flattened to two narrow Parquet
+files so every question is a SQL query rather than a re-read of 8.5 GB. See
+`notebooks/01_explore_drug_label.ipynb`; its outputs are committed.
+
+| Measurement | Result |
+|---|---|
+| Schema | 183 field paths, 2 levels deep. Every field `array<string>` except `openfda.is_original_packager` |
+| Attributable records | 86,367 of 261,258 (**33.1%**) carry `openfda` metadata |
+| Exact-duplicate section text | **59.4%** (4,442,377 texts, 1,803,438 distinct) |
+| Prescription labels | **37,018** (14.2%) |
+| Identity | `set_id`, `id` and record count all exactly 261,258 |
+
+Three of these overturned assumptions taken from single-file samples, and two are worth
+stating because they change the code:
+
+**`openfda` is present on 100% of records but its subfields on only 33.1%.** The block
+exists as an empty object two thirds of the time, so `"openfda" in record` is true for every
+record and is the wrong test. Testing the value admits 86,367 records; testing the key would
+have admitted ~175,000 unattributable ones.
+
+**TR-50 fails per section, not outright.** `use_in_specific_populations` overflows a
+512-token window 94.6% of the time and `warnings_and_cautions` 83.5%, but `contraindications`
+only 3.2%. The chunker needs a keep-whole path and a split path rather than one rule.
+
+The v1 corpus is therefore **37,018 prescription labels, 270,901 indexable sections,
+649,562 projected chunks before deduplication.**
 
 ## Design decisions fixed up front
 
@@ -37,6 +66,15 @@ the difference would stay hidden until the corpus is refreshed.
 **Evaluation before optimisation.** The gold set and a harness that runs in under a
 minute come before any retrieval tuning. An unmeasured retrieval layer is worth less
 than none, which is the argument ADR-015 used to decline building this under deadline.
+
+**Deduplication is mandatory, not an optimisation.** At a 59.4% exact-duplicate rate, one
+`warnings` text appears on 6,390 labels. Without dedup a matching query returns the same
+paragraph as all five top results. It is also what brings the chunk count comfortably inside
+the target range.
+
+**Drug identity resolves at query time through a tiered ladder**, `rxcui` then brand name
+then canonical name, mirroring the shape of ADR-005's own resolution. No single route
+suffices: measured hit rates are 53.5%, 63.8% and 41.4% respectively.
 
 **No orchestration dependency.** `rag/` reads Bronze JSONL and the offline Parquet marts
 directly. It needs no Snowflake, no Airflow and no Spark.
