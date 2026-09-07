@@ -1,0 +1,40 @@
+# RAG extension: Phases 0-2 (explore, chunk, gold set + eval harness).
+#
+# Deliberately excludes embedding and vector-store packages. Those arrive in
+# Phase 3, once the corpus scope is measured and the store is chosen on
+# evidence. See rag/README.md for phase status.
+#
+# Install:  python -m pip install -r rag/requirements.txt
+# Pin after a working install:  python -m pip freeze > rag/requirements.lock.txt
+
+# --- data access: bronze JSONL and the offline marts ---
+duckdb>=1.0
+pyarrow>=16
+pandas>=2.2
+
+# --- exploration ---
+jupyterlab>=4.2
+ipykernel>=6.29
+
+# --- chunking ---
+# tokenizers loads the embedding model's own tokenizer without pulling torch,
+# so token counts match what the model will actually see at index time.
+tokenizers>=0.20
+huggingface-hub>=0.25
+# Sentence segmentation that survives clinical abbreviations (mg., e.g., Dr.).
+# Replaceable with a regex if it disappoints; it is used only as the fallback
+# split when a paragraph exceeds the token budget.
+pysbd>=0.3.4
+
+# --- eval harness ---
+numpy>=1.26
+tqdm>=4.66
+
+# --- tests ---
+pytest>=8.0
+
+# --- Phase 3+ (NOT installed yet, listed so the trajectory is explicit) ---
+# fastembed              # ONNX int8 embeddings on CPU, no torch
+# qdrant-client          # vector store, Phase 4
+# bm25s                  # fast local BM25 for store-independent Experiment A
+# sentence-transformers  # only if torch-based models (MedCPT, EmbeddingGemma) are benchmarked

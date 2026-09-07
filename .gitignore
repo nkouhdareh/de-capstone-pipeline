@@ -23,6 +23,7 @@ data/
 .venv/
 .venv-dbt/
 .venv-app/
+.venv-rag/
 venv/
 __pycache__/
 *.py[cod]
@@ -66,3 +67,4 @@ docs/Layer Explanation/
 scripts/PoC/*.md
 scripts/PoC/*.docx
 app/db.py.bak
+rag/notes/
