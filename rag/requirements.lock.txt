@@ -73,7 +73,6 @@ pure_eval==0.2.3
 pyarrow==25.0.1
 pycparser==3.0
 Pygments==2.21.0
-pysbd==0.3.4
 pytest==9.1.1
 python-dateutil==2.9.0.post0
 python-json-logger==4.2.0
