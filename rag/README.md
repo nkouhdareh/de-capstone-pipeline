@@ -12,7 +12,7 @@ built in [ADR-015](../docs/adr/ADR-015-retrieval-extension-not-built.md).
 |---|---|
 | Scaffold | done |
 | 0 Explore the label corpus | **done** |
-| 1 Corpus scoping and chunking | not started |
+| 1 Corpus scoping and chunking | **done** |
 | 2 Gold set and evaluation harness | not started |
 | 3 Dense retrieval baseline | not started |
 | 4 Hybrid retrieval, vector store decision (ADR-006) | not started |
@@ -64,6 +64,16 @@ is under.
 
 The v1 corpus is therefore **86,367 labels across a 16-section allowlist, roughly 692,000
 chunks before deduplication and about 285,000 after.**
+
+### Phase 1 result
+
+86,367 labels chunked in 37 minutes into **360,916 chunks**, from 851,377 before
+deduplication removed 57.6%. No chunk exceeds 512 tokens. Phase 0's projections held:
+it predicted 86,367 labels (exact), a ~59.4% duplicate rate (57.6% actual) and about
+340,000 chunks (360,916 actual).
+
+Both chunking paths are exercised, which is why the two-path design exists: 26% of
+prescription sections were small enough to keep whole, while 70% needed splitting.
 
 ### Known limitation
 

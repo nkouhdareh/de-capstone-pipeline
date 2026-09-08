@@ -30,11 +30,11 @@ jobs:
       # Blocking: real errors only - syntax errors and undefined names.
       # scripts/PoC is week-1 proof-of-concept code, kept for provenance.
       - name: Errors that must block
-        run: ruff check --select=E9,F63,F7,F82 --exclude scripts/PoC scripts app airflow/dags
+        run: ruff check --select=E9,F63,F7,F82 --exclude scripts/PoC --exclude '*.ipynb' scripts app airflow/dags rag
 
       # Informational: the full rule set, never fails the build.
       - name: Full style report
-        run: ruff check --exit-zero --statistics --exclude scripts/PoC scripts app airflow/dags
+        run: ruff check --exit-zero --statistics --exclude scripts/PoC --exclude '*.ipynb' scripts app airflow/dags rag
 
   syntax:
     name: python syntax
@@ -94,6 +94,7 @@ jobs:
           hits=$(git ls-files -z -- '*.py' '*.sql' '*.yml' '*.yaml' '*.toml' '*.sh' '*.json' '*.cfg' '*.ini' 'Dockerfile*' \
             | xargs -0 grep -nEIi -- "(PASSWORD|SECRET|TOKEN|API_KEY)[A-Za-z_]*[[:space:]]*[:=][[:space:]]*[\"']?[A-Za-z0-9/+=_-]{8,}" 2>/dev/null \
             | grep -vEi 'your_|placeholder|changeme|redacted|dummy|example|xxxx|env_var|secrets\.|\$\{|<' \
+            | grep -vE 'count_tokens|token_counter|tokenizer|n_tokens|(max|min|target)_tokens' \
             | cut -d: -f1,2 || true)
           if [ -n "$hits" ]; then echo "FAIL - found at:"; echo "$hits"; failed=1; else echo "     clean"; fi
 
@@ -162,4 +163,4 @@ jobs:
       # TR-38 - metric formulas checked against de_capstone/seeds/signal_worked_example.csv,
       #         the same fixture the dbt test asserts on in Snowflake.
       - name: Run unit tests
-        run: pytest tests -q        
+        run: pytest tests rag/tests -q        

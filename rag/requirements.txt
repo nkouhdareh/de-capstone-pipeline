@@ -21,10 +21,10 @@ ipykernel>=6.29
 # so token counts match what the model will actually see at index time.
 tokenizers>=0.20
 huggingface-hub>=0.25
-# Sentence segmentation that survives clinical abbreviations (mg., e.g., Dr.).
-# Replaceable with a regex if it disappoints; it is used only as the fallback
-# split when a paragraph exceeds the token budget.
-pysbd>=0.3.4
+# No sentence-segmentation library. pysbd was tried and removed: profiling showed
+# it was 50% of total chunking runtime (988,976 regex compilations for 347 labels),
+# and it did not know unit abbreviations like "mg." anyway. chunker.py masks those
+# abbreviations itself and splits with one regex. 197s -> 30s on the same input.
 
 # --- eval harness ---
 numpy>=1.26
