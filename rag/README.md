@@ -32,7 +32,7 @@ files so every question is a SQL query rather than a re-read of 8.5 GB. See
 | Schema | 183 field paths, 2 levels deep. Every field `array<string>` except `openfda.is_original_packager` |
 | Attributable records | 86,367 of 261,258 (**33.1%**) carry `openfda` metadata |
 | Exact-duplicate section text | **59.4%** (4,442,377 texts, 1,803,438 distinct) |
-| Prescription labels | **37,018** (14.2%) |
+| Label types | 37,018 prescription, 49,328 OTC, 21 cellular therapy |
 | Identity | `set_id`, `id` and record count all exactly 261,258 |
 
 Three of these overturned assumptions taken from single-file samples, and two are worth
@@ -47,8 +47,37 @@ have admitted ~175,000 unattributable ones.
 512-token window 94.6% of the time and `warnings_and_cautions` 83.5%, but `contraindications`
 only 3.2%. The chunker needs a keep-whole path and a split path rather than one rule.
 
-The v1 corpus is therefore **37,018 prescription labels, 270,901 indexable sections,
-649,562 projected chunks before deduplication.**
+**Scoping to prescription-only was tested and rejected.** OTC labels outnumber prescription
+ones (49,328 vs 35,877) but carry 21 times less text, so including them costs 4.8% more
+chunks. Excluding them would have removed the drugs the highest-value FAERS questions are
+about: acetaminophen, ibuprofen, aspirin, naproxen, diphenhydramine.
+
+That test also exposed a second error. The original 10-section allowlist was
+prescription-shaped. OTC labels put safety content in different fields, all short: `stop_use`
+(29,507 labels, 172 chars average), `when_using` (23,173), `do_not_use` (22,453),
+`ask_doctor` (17,155). Those are now included.
+
+**The corpus therefore has two opposite chunking problems.** Prescription sections are few
+and enormous and must be split; OTC sections are six per label and roughly 40 tokens each and
+must be merged. One rule solves both: target 350 to 450 tokens, split what is over, merge what
+is under.
+
+The v1 corpus is therefore **86,367 labels across a 16-section allowlist, roughly 692,000
+chunks before deduplication and about 285,000 after.**
+
+### Known limitation
+
+The remaining **174,891 labels (66.9%) are out of scope**, because openFDA could not
+harmonise them to the NDC directory and they carry no brand name, generic name or NDC. They
+are not unidentifiable, only unharmonised: 99.8% carry a product name in
+`spl_product_data_elements` and 63.6% carry an `active_ingredient` field. Between them they
+hold roughly 190 million characters of `warnings` text.
+
+They are excluded on **attribution**, not cost. A chunk that cannot be attached to a drug name
+cannot be filtered to or cited, and if it surfaces anyway it looks like an answer while being
+unusable. Recovering them means resolving free-text ingredient names, which is the
+[ADR-005](../docs/adr/ADR-005-drug-name-resolution-tiers.md) problem on a cleaner input.
+Deferred and sized, not dismissed.
 
 ## Design decisions fixed up front
 
