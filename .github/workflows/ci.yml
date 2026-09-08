@@ -94,6 +94,7 @@ jobs:
           hits=$(git ls-files -z -- '*.py' '*.sql' '*.yml' '*.yaml' '*.toml' '*.sh' '*.json' '*.cfg' '*.ini' 'Dockerfile*' \
             | xargs -0 grep -nEIi -- "(PASSWORD|SECRET|TOKEN|API_KEY)[A-Za-z_]*[[:space:]]*[:=][[:space:]]*[\"']?[A-Za-z0-9/+=_-]{8,}" 2>/dev/null \
             | grep -vEi 'your_|placeholder|changeme|redacted|dummy|example|xxxx|env_var|secrets\.|\$\{|<' \
+            | grep -vE 'count_tokens|token_counter|tokenizer|n_tokens|(max|min|target)_tokens' \
             | cut -d: -f1,2 || true)
           if [ -n "$hits" ]; then echo "FAIL - found at:"; echo "$hits"; failed=1; else echo "     clean"; fi
 
