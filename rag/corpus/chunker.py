@@ -27,8 +27,14 @@ from functools import lru_cache
 # The tokenizer that matters is the embedding model's own, since its 512-token
 # limit is what the chunk has to fit. Phase 3 may swap the model; changing this
 # constant re-chunks the corpus, which is why chunker_version is recorded.
-EMBED_MODEL = "BAAI/bge-small-en-v1.5"
-CHUNKER_VERSION = "1.0.0"
+# 2026-09-24: arctic-embed-s replaced BAAI/bge-small-en-v1.5. Same size class,
+# same 512-token window, Apache 2.0, published in the US, which is easier to
+# defend on provenance. 1.1.0 records that the token counter changed.
+# Measured on the swap: both tokenizers carry the same 30,522-token vocabulary
+# and gave identical counts on all 360,916 chunks (max 480), so the chunk table
+# built by 1.0.0 is still valid and was not rebuilt.
+EMBED_MODEL = "Snowflake/snowflake-arctic-embed-s"
+CHUNKER_VERSION = "1.1.0"
 
 TARGET_TOKENS = 400   # aim here
 MAX_TOKENS = 480      # never exceed; the model cap is 512
