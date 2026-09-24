@@ -13,7 +13,7 @@ built in [ADR-015](../docs/adr/ADR-015-retrieval-extension-not-built.md).
 | Scaffold | done |
 | 0 Explore the label corpus | **done** |
 | 1 Corpus scoping and chunking | **done** |
-| 2 Gold set and evaluation harness | not started |
+| 2 Gold set and evaluation harness | **done** |
 | 3 Dense retrieval baseline | not started |
 | 4 Hybrid retrieval, vector store decision (ADR-006) | not started |
 | 5 Reranking, diversity, guardrail | not started |
@@ -74,6 +74,28 @@ it predicted 86,367 labels (exact), a ~59.4% duplicate rate (57.6% actual) and a
 
 Both chunking paths are exercised, which is why the two-path design exists: 26% of
 prescription sections were small enough to keep whole, while 70% needed splitting.
+
+### Phase 2 result
+
+**139 questions, every one checked by hand**, in `eval/gold/gold.jsonl`: 42 direct
+lookups, 33 yes/no verifications, 24 paraphrases, 15 exact identifiers, and 25 hard
+negatives whose answer is deliberately not in the corpus. Split 60/40 into dev and test,
+stratified by question type, so nothing is tuned and reported on the same questions.
+
+Candidates were sampled deterministically, 12 per section, and the verification questions
+come from this project's own FAERS signals, so retrieval is tested against the
+drug-reaction pairs the pipeline already found. An LLM drafted the questions and all 140
+were then reviewed by hand: 134 kept as drafted, 5 corrected, 1 dropped.
+
+A gold question stores `(set_id, section, answer_span)` and never a chunk id, because
+every chunk id changes when the chunker changes. `eval/gold.py` maps an anchor onto the
+chunk ids of the current index in one second, and all 114 answerable questions resolve.
+
+`python -m rag.eval.run_eval` takes **1.2 seconds** against a 60 second budget, and proves
+itself on two baselines: a retriever that cannot be wrong scores 1.000 on every metric,
+and one that cannot be right scores 0.000. Metrics are recall@1/5/10/20, MRR@10 and
+nDCG@10, each with a 95% bootstrap interval, because at n=56 on the test split a 3 point
+difference is noise.
 
 ### Known limitation
 

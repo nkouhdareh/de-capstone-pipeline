@@ -27,13 +27,16 @@ huggingface-hub>=0.25
 # abbreviations itself and splits with one regex. 197s -> 30s on the same input.
 
 # --- eval harness ---
-numpy>=1.26
+# openpyxl reads and writes the .xlsx review sheet. No numpy: the metrics are pure
+# Python so rag/tests runs in CI, where only pytest is installed.
+openpyxl>=3.1
 tqdm>=4.66
 
 # --- tests ---
 pytest>=8.0
 
 # --- Phase 3+ (NOT installed yet, listed so the trajectory is explicit) ---
+# numpy                  # arrives with the embedding stack, not needed before it
 # fastembed              # ONNX int8 embeddings on CPU, no torch
 # qdrant-client          # vector store, Phase 4
 # bm25s                  # fast local BM25 for store-independent Experiment A
