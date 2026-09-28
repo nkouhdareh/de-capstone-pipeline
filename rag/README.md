@@ -15,9 +15,9 @@ built in [ADR-015](../docs/adr/ADR-015-retrieval-extension-not-built.md).
 | 1 Corpus scoping and chunking | **done** |
 | 2 Gold set and evaluation harness | **done** |
 | 3 Dense retrieval baseline | **done** |
-| 4 Hybrid retrieval, vector store decision (ADR-006) | not started |
+| 4 Hybrid retrieval, vector store decision (ADR-016) | **done** |
 | 5 Reranking, diversity, guardrail | not started |
-| 6 Generation and Streamlit tab (ADR-008) | not started |
+| 6 Generation and Streamlit tab (ADR-017) | not started |
 
 Nothing here is wired into the dashboard yet.
 
@@ -127,6 +127,39 @@ Four findings came from measuring rather than assuming:
 - **recall@20 is 0.28 above recall@5.** The answer is often retrieved but ranked too low,
   which is what a reranker fixes, so Phase 5 is justified by measurement.
 
+### Phase 4 result
+
+Keyword search (BM25) now runs beside dense search, and the two ranked lists are fused
+with Reciprocal Rank Fusion (RRF). BM25 is hand-rolled on numpy: Snowball stemming,
+Lucene's 33 stopwords, and raw counts stored term by term, so its two settings can change
+without a rebuild. Its index builds in **30 seconds**; the dense one took 10.8 hours.
+
+Every claim is now a **paired comparison**: for each question, B's score minus A's, with a
+bootstrap interval of those differences. On the 68 answerable dev questions:
+
+| | recall@1 | recall@5 | recall@10 | recall@20 | MRR@10 | nDCG@10 |
+|---|---|---|---|---|---|---|
+| dense | 0.235 | 0.471 | 0.662 | 0.750 | 0.351 | 0.421 |
+| BM25 | 0.324 | 0.485 | 0.574 | 0.721 | 0.390 | 0.433 |
+| **hybrid, RRF k = 60** | **0.353** | **0.588** | **0.691** | **0.824** | **0.446** | **0.504** |
+
+Hybrid against dense, paired: recall@5 **+0.118 [+0.029, +0.206]**, better on 9 questions
+and worse on 1; nDCG@10 +0.083 [+0.017, +0.150].
+
+- **BM25 and dense tie, but fail on different questions**, 11 wins to 10 at recall@5,
+  which is the condition for fusion to help. Fused, paraphrase questions rise from 0.214 to
+  0.357 and lookups from 0.440 to 0.600, above either retriever alone.
+- **k stays at the textbook 60.** Of 18 settings swept on dev, k = 20 came first, but it
+  differs from k = 60 on 3 questions of 68. Normalised weighted sums lost to RRF at every
+  weight tried.
+- **The drug-name filter (TR-53) was measured, not built.** Even a perfect detector, the
+  gold set's own drug names, adds recall@5 +0.044 [-0.015, +0.118]: hybrid's top 5 is
+  already the right drug 83.5% of the time. Detecting drugs from question text is unreliable
+  (brands named "The", "Pain", "Water"), and a wrong detection hides the right answer.
+- **No separate vector store** (ADR-016, written up in Phase 7). Exact search takes 19 ms and is
+  always right. faiss HNSW takes 0.4 ms but finds 0.939 of the exact top 20, and none of it
+  for one question, for a saving nobody sees next to an LLM answer.
+
 ### Known limitation
 
 The remaining **174,891 labels (66.9%) are out of scope**, because openFDA could not
@@ -163,9 +196,10 @@ than none, which is the argument ADR-015 used to decline building this under dea
 paragraph as all five top results. It is also what brings the chunk count comfortably inside
 the target range.
 
-**Drug identity resolves at query time through a tiered ladder**, `rxcui` then brand name
-then canonical name, mirroring the shape of ADR-005's own resolution. No single route
-suffices: measured hit rates are 53.5%, 63.8% and 41.4% respectively.
+**Drug identity was planned to resolve at query time through a tiered ladder**, `rxcui`
+then brand name then canonical name (measured hit rates 53.5%, 63.8% and 41.4%). Phase 4
+measured what a query-time drug filter could add at best and did not build it; see the
+Phase 4 result.
 
 **No orchestration dependency.** `rag/` reads Bronze JSONL and the offline Parquet marts
 directly. It needs no Snowflake, no Airflow and no Spark.
@@ -197,7 +231,7 @@ same collision that put dbt in its own container.
 | Source | Role |
 |---|---|
 | `data/bronze/drug_label/` (8.55 GB, 261,258 records) | The corpus. The only source embedded. |
-| `data/offline/int_drug_resolution.parquet` | Query-time drug name resolution |
+| `data/offline/int_drug_resolution.parquet` | Not used: the query-time drug filter was measured and not built (Phase 4) |
 | `data/offline/dim_drug.parquet` | Drug identity for filtering |
 
 `data/bronze/drug_event/` is not used here. It is structured report counts and is
