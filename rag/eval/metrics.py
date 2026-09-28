@@ -24,6 +24,15 @@ Every metric is a mean over questions, reported with a 95% bootstrap interval.
 At n=56 on the test split, 3 points of recall is noise, and the interval is what
 stops a tuning session from chasing it.
 
+Two retrievers are compared PAIRED, never by laying two intervals side by side.
+Some questions are hard for every retriever and some are easy for every one, and
+that shared difficulty makes each interval wide. On the same questions it cancels
+out: take B's score minus A's for every question, then bootstrap those
+differences. At n=68 two separate intervals can overlap while the paired one
+sits clear of zero, which is the whole reason for pairing. Phase 4 and every
+phase after it make "A vs B on the same questions" claims, so this is the only
+comparison the harness prints.
+
 A question that is in the gold set but missing from a run counts as a miss, never
 as a skip. A retriever that returns nothing must score zero.
 
@@ -51,6 +60,26 @@ class Metric(NamedTuple):
 
     def __str__(self) -> str:
         return f"{self.value:.3f} [{self.low:.3f}, {self.high:.3f}]"
+
+
+class Paired(NamedTuple):
+    a: float            # A's mean
+    b: float            # B's mean
+    diff: float         # B minus A, averaged over the same questions
+    low: float          # lower end of the 95% paired bootstrap interval of diff
+    high: float
+    n: int
+    better: int         # questions where B scored higher than A
+    worse: int          # questions where B scored lower
+    same: int
+
+    def verdict(self, name_a: str = "A", name_b: str = "B") -> str:
+        """Only an interval that excludes zero names a winner."""
+        if self.low > 0:
+            return f"{name_b} better"
+        if self.high < 0:
+            return f"{name_a} better"
+        return "no clear difference"
 
 
 def hit_at_k(ranked: Sequence[str], relevant: Iterable[str], k: int) -> float:
@@ -123,6 +152,23 @@ def summarise(per_question: Mapping[str, float], seed: int = BOOTSTRAP_SEED) -> 
     return Metric(mean(scores), low, high, len(scores))
 
 
+def per_question(run: Mapping[str, Sequence[str]], relevant: Mapping[str, Iterable[str]],
+                 ks: Sequence[int] = KS,
+                 answers: Mapping[str, int] | None = None) -> dict[str, dict[str, float]]:
+    """metric name -> qid -> that question's score. The means in evaluate() and
+    the differences in compare() are both taken from here, so the two can never
+    disagree about what a question scored."""
+    scores = {}
+    for k in ks:
+        scores[f"recall@{k}"] = {qid: hit_at_k(run.get(qid, ()), chunks, k)
+                                 for qid, chunks in relevant.items()}
+    scores["mrr@10"] = {qid: reciprocal_rank(run.get(qid, ()), chunks, 10)
+                        for qid, chunks in relevant.items()}
+    scores["ndcg@10"] = {qid: ndcg(run.get(qid, ()), chunks, 10, (answers or {}).get(qid))
+                         for qid, chunks in relevant.items()}
+    return scores
+
+
 def evaluate(run: Mapping[str, Sequence[str]], relevant: Mapping[str, Iterable[str]],
              ks: Sequence[int] = KS, seed: int = BOOTSTRAP_SEED,
              answers: Mapping[str, int] | None = None) -> dict[str, Metric]:
@@ -133,18 +179,33 @@ def evaluate(run: Mapping[str, Sequence[str]], relevant: Mapping[str, Iterable[s
     Only questions present in `relevant` are scored, so negatives stay out of the
     retrieval numbers by construction rather than by remembering to exclude them.
     """
-    scored = {}
-    for k in ks:
-        scored[f"recall@{k}"] = summarise(
-            {qid: hit_at_k(run.get(qid, ()), answers, k)
-             for qid, answers in relevant.items()}, seed)
-    scored["mrr@10"] = summarise(
-        {qid: reciprocal_rank(run.get(qid, ()), answers, 10)
-         for qid, answers in relevant.items()}, seed)
-    scored["ndcg@10"] = summarise(
-        {qid: ndcg(run.get(qid, ()), chunks, 10, (answers or {}).get(qid))
-         for qid, chunks in relevant.items()}, seed)
-    return scored
+    return {name: summarise(scores, seed)
+            for name, scores in per_question(run, relevant, ks, answers).items()}
+
+
+def compare(run_a: Mapping[str, Sequence[str]], run_b: Mapping[str, Sequence[str]],
+            relevant: Mapping[str, Iterable[str]], ks: Sequence[int] = KS,
+            seed: int = BOOTSTRAP_SEED,
+            answers: Mapping[str, int] | None = None) -> dict[str, Paired]:
+    """B against A on the same questions, metric by metric.
+
+    The interval is the ordinary bootstrap of the per-question differences:
+    resampling a question takes its A score and its B score together, which is
+    what makes it paired. Same seed as evaluate(), so a comparison can be
+    reproduced exactly.
+    """
+    scores_a = per_question(run_a, relevant, ks, answers)
+    scores_b = per_question(run_b, relevant, ks, answers)
+    compared = {}
+    for name, by_qid in scores_a.items():
+        diffs = [scores_b[name][qid] - score for qid, score in by_qid.items()]
+        low, high = bootstrap_ci(diffs, seed=seed)
+        better = sum(diff > 0 for diff in diffs)
+        worse = sum(diff < 0 for diff in diffs)
+        compared[name] = Paired(mean(by_qid.values()), mean(scores_b[name].values()),
+                                mean(diffs), low, high, len(diffs),
+                                better, worse, len(diffs) - better - worse)
+    return compared
 
 
 def format_table(metrics: Mapping[str, Metric], title: str = "") -> str:
@@ -153,4 +214,17 @@ def format_table(metrics: Mapping[str, Metric], title: str = "") -> str:
     for name, metric in metrics.items():
         lines.append(f"  {name:<10} {metric.value:>6.3f}   "
                      f"[{metric.low:.3f}, {metric.high:.3f}]   {metric.n:>3}")
+    return "\n".join(lines)
+
+
+def format_comparison(compared: Mapping[str, Paired], name_a: str, name_b: str) -> str:
+    n = next(iter(compared.values())).n if compared else 0
+    header = (f"  {'metric':<10} {'A':>6} {'B':>6} {'B-A':>7}   {'95% interval':<17}"
+              f" {'B+':>3} {'B-':>3} {'=':>3}   verdict")
+    lines = [f"paired: {name_b} (B) against {name_a} (A), the same {n} questions", header]
+    for name, p in compared.items():
+        lines.append(f"  {name:<10} {p.a:>6.3f} {p.b:>6.3f} {p.diff:>+7.3f}   "
+                     f"[{p.low:+.3f}, {p.high:+.3f}]  {p.better:>3} {p.worse:>3} {p.same:>3}"
+                     f"   {p.verdict(name_a, name_b)}")
+    lines.append("  B+ / B- / =: questions where B scored higher, lower, the same")
     return "\n".join(lines)
