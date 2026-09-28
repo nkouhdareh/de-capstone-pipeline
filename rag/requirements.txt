@@ -1,8 +1,8 @@
-# RAG extension: Phases 0-2 (explore, chunk, gold set + eval harness).
+# RAG extension: Phases 0-3 (explore, chunk, gold set and eval harness, dense
+# retrieval).
 #
-# Deliberately excludes embedding and vector-store packages. Those arrive in
-# Phase 3, once the corpus scope is measured and the store is chosen on
-# evidence. See rag/README.md for phase status.
+# Vector-store packages are deliberately left out until Phase 4 chooses a store
+# on evidence. See rag/README.md for phase status.
 #
 # Install:  python -m pip install -r rag/requirements.txt
 # Pin after a working install:  python -m pip freeze > rag/requirements.lock.txt
@@ -32,12 +32,17 @@ huggingface-hub>=0.25
 openpyxl>=3.1
 tqdm>=4.66
 
+# --- dense retrieval (Phase 3) ---
+# fastembed runs the embedding model with ONNX Runtime on the CPU, with no torch.
+# It is published by Qdrant (Berlin); the model, snowflake-arctic-embed-s, by
+# Snowflake (US). numpy holds the 360,916 vectors and does the exact search.
+fastembed>=0.8
+numpy>=1.26
+
 # --- tests ---
 pytest>=8.0
 
-# --- Phase 3+ (NOT installed yet, listed so the trajectory is explicit) ---
-# numpy                  # arrives with the embedding stack, not needed before it
-# fastembed              # ONNX int8 embeddings on CPU, no torch
+# --- Phase 4+ (NOT installed yet, listed so the trajectory is explicit) ---
 # qdrant-client          # vector store, Phase 4
 # bm25s                  # fast local BM25 for store-independent Experiment A
 # sentence-transformers  # only if torch-based models (MedCPT, EmbeddingGemma) are benchmarked

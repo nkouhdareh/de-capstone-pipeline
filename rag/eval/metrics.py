@@ -68,16 +68,27 @@ def reciprocal_rank(ranked: Sequence[str], relevant: Iterable[str], k: int = 10)
     return 0.0
 
 
-def ndcg(ranked: Sequence[str], relevant: Iterable[str], k: int = 10) -> float:
-    """Binary relevance, log2 position discount, ideal ranking capped at k."""
-    answers = set(relevant)
-    if not answers:
+def ndcg(ranked: Sequence[str], relevant: Iterable[str], k: int = 10,
+         answers: int | None = None) -> float:
+    """Binary relevance, log2 position discount, ideal ranking capped at k.
+
+    answers is how many DISTINCT answers the relevant chunks hold. When several
+    labels print the same sentence, their chunks are one answer in many copies,
+    so only the first `answers` hits earn any gain. Otherwise ten copies of one
+    paragraph would outscore one answer and nine other chunks, rewarding the
+    near-duplicate flooding a good retriever should avoid. Without it, every
+    relevant chunk counts as a different answer.
+    """
+    chunks = set(relevant)
+    if not chunks:
         return 0.0
-    gain = sum(1.0 / log2(position + 1)
-               for position, chunk_id in enumerate(ranked[:k], start=1)
-               if chunk_id in answers)
-    ideal = sum(1.0 / log2(position + 1)
-                for position in range(1, min(len(answers), k) + 1))
+    cap = min(len(chunks) if answers is None else max(1, answers), len(chunks), k)
+    gain, hits = 0.0, 0
+    for position, chunk_id in enumerate(ranked[:k], start=1):
+        if chunk_id in chunks and hits < cap:
+            gain += 1.0 / log2(position + 1)
+            hits += 1
+    ideal = sum(1.0 / log2(position + 1) for position in range(1, cap + 1))
     return gain / ideal
 
 
@@ -113,9 +124,11 @@ def summarise(per_question: Mapping[str, float], seed: int = BOOTSTRAP_SEED) -> 
 
 
 def evaluate(run: Mapping[str, Sequence[str]], relevant: Mapping[str, Iterable[str]],
-             ks: Sequence[int] = KS, seed: int = BOOTSTRAP_SEED) -> dict[str, Metric]:
+             ks: Sequence[int] = KS, seed: int = BOOTSTRAP_SEED,
+             answers: Mapping[str, int] | None = None) -> dict[str, Metric]:
     """run: qid -> the chunk ids the retriever returned, best first.
     relevant: qid -> the chunk ids that answer it.
+    answers: qid -> how many distinct answers those chunks hold, for nDCG.
 
     Only questions present in `relevant` are scored, so negatives stay out of the
     retrieval numbers by construction rather than by remembering to exclude them.
@@ -129,8 +142,8 @@ def evaluate(run: Mapping[str, Sequence[str]], relevant: Mapping[str, Iterable[s
         {qid: reciprocal_rank(run.get(qid, ()), answers, 10)
          for qid, answers in relevant.items()}, seed)
     scored["ndcg@10"] = summarise(
-        {qid: ndcg(run.get(qid, ()), answers, 10)
-         for qid, answers in relevant.items()}, seed)
+        {qid: ndcg(run.get(qid, ()), chunks, 10, (answers or {}).get(qid))
+         for qid, chunks in relevant.items()}, seed)
     return scored
 
 

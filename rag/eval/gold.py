@@ -16,17 +16,21 @@ route is:
            -> their (section, text_hash)
            -> the chunk id deduplication kept for that text
 
-which is the id a retriever can actually return.
+which is the id a retriever can actually return. Those are the STRICT answers.
 
-One anchor may resolve to several chunks, when the span appears in more than one
-part of the same section. All of them answer the question, so recall counts a
-question as found if any of them is retrieved.
+The same answer on another label counts too. Phase 3's first run scored 0.294
+recall@5, and a diagnosis of its 48 misses found 16 were correct: the answer,
+word for word, from another manufacturer's label of the same drug, chunked at
+different boundaries. So a question's RELEVANT chunks are its strict ones plus
+every chunk in the same section, holding the same answer text, for the same
+drug. For identifier questions "the same drug" means the same brand, because
+they name one product. The strict sets are kept, and reported beside the rest.
 
 Negatives carry no anchor. Their answer is not in the corpus, which is the point
 of having them.
 
-The matching rule is a pure function, so its tests need no corpus, no duckdb and
-no network. duckdb is imported inside fetch(), the one function that reads disk.
+The matching rules are pure functions, so their tests need no corpus, no duckdb
+and no network. duckdb is imported only by the two functions that read disk.
 
 Usage:
     python -m rag.eval.gold        # resolve the whole gold set and report
@@ -34,6 +38,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections import defaultdict
 from collections.abc import Iterable
@@ -48,6 +53,24 @@ GOLD = Path(__file__).resolve().parent / "gold" / "gold.jsonl"
 SPLITS = ("dev", "test")
 QTYPES = ("lookup", "verify", "paraphrase", "identifier", "negative")
 
+# Words that do not change which drug a name means: salts and filler (the list
+# signal_candidates.py uses) plus dosage forms, which label names often carry,
+# as in LISINOPRIL AND HYDROCHLOROTHIAZIDE TABLETS.
+IGNORED_WORDS = frozenset({
+    "HYDROCHLORIDE", "HCL", "HYDROBROMIDE", "HBR", "SODIUM", "POTASSIUM", "CALCIUM",
+    "MAGNESIUM", "ZINC", "BROMIDE", "CHLORIDE", "SULFATE", "PHOSPHATE", "ACETATE",
+    "CITRATE", "MALEATE", "FUMARATE", "SUCCINATE", "TARTRATE", "BITARTRATE",
+    "MESYLATE", "BESYLATE", "TOSYLATE", "LACTATE", "GLUCONATE", "CARBONATE",
+    "BICARBONATE", "NITRATE", "OXALATE", "PROPIONATE", "DIPROPIONATE", "FUROATE",
+    "VALERATE", "TRIFENATATE", "XINAFOATE", "MONOHYDRATE", "DIHYDRATE", "HYDRATE",
+    "ANHYDROUS", "DISODIUM", "ACID", "AND", "WITH", "TRIHYDRATE", "SESQUIHYDRATE",
+    "DIETHYLAMINE", "EPOLAMINE",
+    "TABLET", "TABLETS", "CAPSULE", "CAPSULES", "INJECTION", "INJECTABLE", "USP",
+    "ORAL", "ORALLY", "SOLUTION", "SUSPENSION", "EXTENDED", "DELAYED", "RELEASE",
+    "ER", "XR", "DR", "SR", "FILM", "COATED", "CHEWABLE", "DISINTEGRATING", "FOR",
+    "TOPICAL", "CREAM", "OINTMENT", "GEL", "KIT",
+})
+
 
 class Anchor(NamedTuple):
     qid: str
@@ -57,9 +80,10 @@ class Anchor(NamedTuple):
 
 
 class Resolution(NamedTuple):
-    relevant: dict      # qid -> frozenset of chunk ids that answer it
+    relevant: dict      # qid -> chunk ids holding its answer: strict, plus other labels'
     unresolved: list    # qids whose anchor matched nothing in the current index
     negatives: list     # qids with no anchor, by design
+    strict: dict        # qid -> only the chunks from the label it was written from
 
 
 def load_gold(path=GOLD, split: str | None = None) -> list[dict]:
@@ -96,6 +120,15 @@ def anchors_of(questions: Iterable[dict]) -> list[Anchor]:
             for q in questions if q.get("anchor")]
 
 
+def drug_tokens(name: str | None) -> frozenset:
+    """A drug name's significant words. DULOXETINE HYDROCHLORIDE and Duloxetine
+    both become {DULOXETINE}; AMLODIPINE BESYLATE AND BENAZEPRIL becomes
+    {AMLODIPINE, BENAZEPRIL}, which is a different product. Text only, never
+    drug_key."""
+    return frozenset(word for word in re.findall(r"[A-Z0-9]+", (name or "").upper())
+                     if word not in IGNORED_WORDS)
+
+
 def match_anchors(anchors: Iterable[Anchor], raw_rows, canonical) -> tuple[dict, list]:
     """Pure core: which chunk ids of the current index answer each anchor.
 
@@ -127,8 +160,33 @@ def match_anchors(anchors: Iterable[Anchor], raw_rows, canonical) -> tuple[dict,
     return relevant, unresolved
 
 
+def match_equivalents(questions: Iterable[dict], rows) -> dict:
+    """Pure core: chunks on other labels that hold the same answer.
+
+    rows: (qid, chunk_id, generic_name, brand_name) for every chunk in the
+          anchor's section whose text contains the answer span, on any label.
+
+    A row counts when its drug is the question's drug: the same significant words
+    in the generic name or, for identifier questions, in the brand name. A name
+    with no significant words never matches, so an unclear case stays strict.
+    """
+    by_qid = {q["qid"]: q for q in questions if q.get("anchor")}
+    found = defaultdict(set)
+    for qid, chunk_id, generic, brand in rows:
+        question = by_qid.get(qid)
+        if question is None:
+            continue
+        if question["qtype"] == "identifier":
+            want, have = drug_tokens(question.get("brand")), drug_tokens(brand)
+        else:
+            want, have = drug_tokens(question.get("drug")), drug_tokens(generic)
+        if want and want == have:
+            found[qid].add(chunk_id)
+    return {qid: frozenset(ids) for qid, ids in found.items()}
+
+
 def fetch(anchors: Iterable[Anchor], raw: str = RAW, chunks: str = CHUNKS):
-    """The only function here that touches disk.
+    """Reads the rows match_anchors needs.
 
     Filtering on (set_id, section) before reading text keeps this under a
     second. Joining the anchors straight against 851,377 raw chunks makes
@@ -162,14 +220,35 @@ def fetch(anchors: Iterable[Anchor], raw: str = RAW, chunks: str = CHUNKS):
     return raw_rows, canonical
 
 
+def fetch_equivalents(anchors: Iterable[Anchor], chunks: str = CHUNKS) -> list:
+    """Reads the rows match_equivalents needs: every chunk in an anchor's section
+    whose text contains its answer span, on any label. Which of them are the
+    same drug is decided in Python, where it can be tested."""
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("CREATE TEMP TABLE spans(qid VARCHAR, section VARCHAR, span VARCHAR)")
+    con.executemany("INSERT INTO spans VALUES (?, ?, ?)",
+                    [(a.qid, a.section, a.answer_span) for a in anchors])
+    rows = con.execute(f"""
+        SELECT s.qid, c.chunk_id, c.generic_name, c.brand_name
+        FROM spans s JOIN '{chunks}' c
+          ON c.section = s.section AND contains(c.text, s.span)
+    """).fetchall()
+    con.close()
+    return rows
+
+
 def resolve(questions: Iterable[dict], raw: str = RAW, chunks: str = CHUNKS) -> Resolution:
     """Anchors to chunk ids, against whatever the chunker last produced."""
     questions = list(questions)
     anchors = anchors_of(questions)
     raw_rows, canonical = fetch(anchors, raw, chunks)
-    relevant, unresolved = match_anchors(anchors, raw_rows, canonical)
+    strict, unresolved = match_anchors(anchors, raw_rows, canonical)
+    equivalents = match_equivalents(questions, fetch_equivalents(anchors, chunks))
+    relevant = {qid: ids | equivalents.get(qid, frozenset()) for qid, ids in strict.items()}
     negatives = [q["qid"] for q in questions if not q.get("anchor")]
-    return Resolution(relevant, unresolved, negatives)
+    return Resolution(relevant, unresolved, negatives, strict)
 
 
 def main() -> None:
@@ -179,15 +258,20 @@ def main() -> None:
     elapsed = time.time() - started
 
     answerable = len(questions) - len(resolution.negatives)
-    sizes = sorted(len(ids) for ids in resolution.relevant.values())
+    strict = sorted(len(ids) for ids in resolution.strict.values())
+    wider = sorted(len(ids) for ids in resolution.relevant.values())
+    gained = sum(1 for qid, ids in resolution.relevant.items()
+                 if len(ids) > len(resolution.strict[qid]))
     print(f"{len(questions)} gold questions: {answerable} answerable, "
           f"{len(resolution.negatives)} negatives")
     print(f"resolved {len(resolution.relevant)} of {answerable} anchors in {elapsed:.1f}s")
     print(f"unresolved: {resolution.unresolved or 'none'}   <- must be none")
-    if sizes:
-        print(f"chunks per question: min {sizes[0]}, median {sizes[len(sizes) // 2]}, "
-              f"max {sizes[-1]}")
-        print(f"answered by more than one chunk: {sum(1 for s in sizes if s > 1)}")
+    if strict:
+        print(f"strict chunks per question:       min {strict[0]}, median "
+              f"{strict[len(strict) // 2]}, max {strict[-1]}")
+        print(f"with other labels of the same drug: min {wider[0]}, median "
+              f"{wider[len(wider) // 2]}, max {wider[-1]}")
+        print(f"questions whose answer is also on other labels: {gained}")
     for split in SPLITS:
         in_split = [q for q in questions if q["split"] == split]
         negatives = sum(1 for q in in_split if q["qtype"] == "negative")
