@@ -1,8 +1,8 @@
-# RAG extension: Phases 0-3 (explore, chunk, gold set and eval harness, dense
-# retrieval).
+# RAG extension: Phases 0-4 (explore, chunk, gold set and eval harness, dense
+# retrieval, BM25).
 #
-# Vector-store packages are deliberately left out until Phase 4 chooses a store
-# on evidence. See rag/README.md for phase status.
+# No vector-store package: Phase 4 measured exact numpy search against HNSW and
+# kept exact search (ADR-016). See rag/README.md for phase status.
 #
 # Install:  python -m pip install -r rag/requirements.txt
 # Pin after a working install:  python -m pip freeze > rag/requirements.lock.txt
@@ -39,10 +39,20 @@ tqdm>=4.66
 fastembed>=0.8
 numpy>=1.26
 
+# --- keyword retrieval (Phase 4) ---
+# BM25 is hand-rolled on numpy in rag/retrieve/sparse.py, so no BM25 library.
+# py-rust-stemmers is the Snowball English stemmer (Qdrant, MIT). fastembed
+# already pulls it in; it is listed because sparse.py now uses it directly.
+py-rust-stemmers>=0.1
+
+# --- measurement only (Phase 4) ---
+# faiss (Meta, MIT) builds the HNSW index that rag/eval/ann_recall.py measures
+# against exact search. Nothing in the retrieval path imports it.
+faiss-cpu>=1.15
+
 # --- tests ---
 pytest>=8.0
 
 # --- Phase 4+ (NOT installed yet, listed so the trajectory is explicit) ---
-# qdrant-client          # vector store, Phase 4
-# bm25s                  # fast local BM25 for store-independent Experiment A
+# qdrant-client          # only if ADR-016 is revisited: filtered HNSW past ~2-3M chunks
 # sentence-transformers  # only if torch-based models (MedCPT, EmbeddingGemma) are benchmarked

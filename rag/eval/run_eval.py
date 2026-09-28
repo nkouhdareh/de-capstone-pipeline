@@ -10,6 +10,8 @@ Every later claim in this project rests on these two lines.
     dense            arctic-embed-s, exact search over all 360,916 chunks
     dense-noprefix   the same without arctic's query instruction, so what the
                      prefix is worth gets measured instead of assumed
+    bm25             keyword search over the same chunks (rag/retrieve/sparse.py)
+    hybrid           dense and bm25 fused by RRF, k = 60 (rag/retrieve/fusion.py)
 
 A retriever is any callable (question, k) -> chunk ids, best first. The question
 is the whole gold record, so a real retriever reads question["question"] while
@@ -21,16 +23,25 @@ run forced that. nDCG counts each distinct answer once, so copies of one
 paragraph earn nothing extra. The strict score, the question's own label only,
 is printed beside the rest.
 
+Two retrievers are compared with --against, on the same questions: B is the
+--retriever, A the --against, and the table shows B minus A per metric with a
+paired bootstrap interval (metrics.py explains why paired). A claim that one
+retriever beats another is made from that table and nothing else.
+
 Report on dev while tuning. Run --split test once, at the end, and publish that.
 
 Usage:
     python -m rag.eval.run_eval                          # the two baselines, on dev
     python -m rag.eval.run_eval --retriever dense        # the dense index, on dev
+    python -m rag.eval.run_eval --retriever dense --against dense-noprefix
+    python -m rag.eval.run_eval --retriever bm25 --against dense
+    python -m rag.eval.run_eval --retriever hybrid --against dense
     python -m rag.eval.run_eval --retriever dense --split test    # once, at the end
 """
 from __future__ import annotations
 
 import argparse
+import copy
 import random
 import sys
 import time
@@ -38,11 +49,12 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from rag.eval.gold import CHUNKS, Resolution, load_gold, resolve
-from rag.eval.metrics import KS, evaluate, format_table
+from rag.eval.metrics import KS, compare, evaluate, format_comparison, format_table
 
 BUDGET_SECONDS = 60     # the Phase 2 gate: a slow harness stops being run
 RANDOM_SEED = 20260924
 RANDOM_CEILING = 0.05   # a random retriever above this means the gold set leaks
+RETRIEVERS = ("dense", "dense-noprefix", "bm25", "hybrid")
 
 Retriever = Callable[[Mapping, int], Sequence[str]]
 
@@ -121,23 +133,44 @@ def run_baselines(questions: Sequence[Mapping], resolution: Resolution, split: s
     ]
 
 
-def run_dense(questions: Sequence[Mapping], resolution: Resolution, split: str, k: int,
-              index: Path | None, use_prefix: bool) -> list[tuple[str, bool]]:
-    from rag.retrieve.dense import INDEX, DenseRetriever
+def load_retriever(name: str, indexes: Mapping, loaded: dict) -> Retriever:
+    """A named retriever. Each index is read once and shared: dense and
+    dense-noprefix differ only in how the question is embedded, and hybrid is
+    the dense and bm25 retrievers themselves, fused."""
+    if name == "hybrid":
+        from rag.retrieve.fusion import HybridRetriever
+        return HybridRetriever(load_retriever("dense", indexes, loaded),
+                               load_retriever("bm25", indexes, loaded))
+    if name == "bm25":
+        if "bm25" not in loaded:
+            from rag.retrieve.sparse import INDEX, SparseRetriever
+            started = time.time()
+            loaded["bm25"] = SparseRetriever(indexes.get("bm25") or INDEX)
+            manifest = loaded["bm25"].manifest
+            print(f"index: {manifest['index']}, {len(loaded['bm25'].ids):,} chunks, "
+                  f"{manifest['n_terms']:,} terms, loaded in {time.time() - started:.1f}s")
+        return loaded["bm25"]
+    index = indexes.get("dense")
+    if "dense" not in loaded:
+        from rag.retrieve.dense import INDEX, DenseRetriever
+        started = time.time()
+        loaded["dense"] = DenseRetriever(index or INDEX)
+        manifest = loaded["dense"].manifest
+        print(f"index: {manifest['index']}, {len(loaded['dense'].ids):,} chunks, "
+              f"{manifest['precision']}, loaded in {time.time() - started:.1f}s")
+    if name == "dense":
+        return loaded["dense"]
+    variant = copy.copy(loaded["dense"])      # shares the vectors and the model
+    variant.use_prefix = False
+    return variant
 
-    loaded = time.time()
-    retriever = DenseRetriever(index or INDEX, use_prefix=use_prefix)
-    manifest = retriever.manifest
-    print(f"index: {manifest['index']}, {len(retriever.ids):,} chunks, {manifest['precision']}, "
-          f"query prefix {'on' if use_prefix else 'OFF'}, loaded in {time.time() - loaded:.1f}s")
 
-    searched = time.time()
-    run = run_retriever(questions, retriever, k)
-    per_question = (time.time() - searched) / max(1, len(questions))
+def report(name: str, run: Mapping, questions: Sequence[Mapping], resolution: Resolution,
+           split: str, per_question: float) -> None:
     scored = evaluate(run, resolution.relevant, answers=distinct_answers(resolution))
     strict = evaluate(run, resolution.strict, ks=(5,))["recall@5"]
     print()
-    print(format_table(scored, f"{split}, {'dense' if use_prefix else 'dense-noprefix'} retriever"))
+    print(format_table(scored, f"{split}, {name} retriever"))
     print(f"  strict, own label only: recall@5 {strict.value:.3f} [{strict.low:.3f}, {strict.high:.3f}]")
     print_by_qtype(run, resolution.relevant, questions)
 
@@ -146,6 +179,25 @@ def run_dense(questions: Sequence[Mapping], resolution: Resolution, split: str, 
     print(f"\n  recall@20 minus recall@5: {gap:+.3f}   ({1000 * per_question:.0f} ms per question)")
     print("    large: the answer is retrieved but ranked too low, which a reranker can fix")
     print("    small: the answer is not retrieved at all, which no reranker can fix")
+
+
+def run_named(questions: Sequence[Mapping], resolution: Resolution, split: str, k: int,
+              indexes: Mapping, names: Sequence[str]) -> list[tuple[str, bool]]:
+    """Score each named retriever. With two names, the first is B, the second A,
+    and the paired comparison of B against A is printed last."""
+    loaded, runs = {}, {}
+    for name in names:
+        retriever = load_retriever(name, indexes, loaded)
+        searched = time.time()
+        runs[name] = run_retriever(questions, retriever, k)
+        report(name, runs[name], questions, resolution, split,
+               (time.time() - searched) / max(1, len(questions)))
+    if len(names) == 2:
+        name_b, name_a = names
+        print()
+        print(format_comparison(compare(runs[name_a], runs[name_b], resolution.relevant,
+                                        answers=distinct_answers(resolution)),
+                                name_a, name_b))
     return []
 
 
@@ -154,12 +206,19 @@ def main() -> None:
     parser.add_argument("--split", choices=("dev", "test", "all"), default="dev",
                         help="dev while tuning; test once, at the end")
     parser.add_argument("--k", type=int, default=max(KS), help="how deep to retrieve")
-    parser.add_argument("--retriever", choices=("baselines", "dense", "dense-noprefix"),
+    parser.add_argument("--retriever", choices=("baselines", *RETRIEVERS),
                         default="baselines",
                         help="baselines proves the harness works; dense scores the Phase 3 index")
+    parser.add_argument("--against", choices=RETRIEVERS,
+                        help="a second retriever; prints the paired comparison of --retriever "
+                             "(B) against this one (A), on the same questions")
     parser.add_argument("--index", type=Path,
                         help="index folder for dense; default the full arctic-s-fp32 index")
+    parser.add_argument("--bm25-index", type=Path,
+                        help="index folder for bm25; default data/rag/index/bm25-v1")
     args = parser.parse_args()
+    if args.against and args.retriever == "baselines":
+        parser.error("--against compares two real retrievers; pick one with --retriever")
 
     started = time.time()
     questions = load_gold(split=None if args.split == "all" else args.split)
@@ -173,8 +232,9 @@ def main() -> None:
     if args.retriever == "baselines":
         checks = run_baselines(questions, resolution, args.split, args.k)
     else:
-        checks = run_dense(questions, resolution, args.split, args.k, args.index,
-                           use_prefix=args.retriever == "dense")
+        names = [args.retriever] + ([args.against] if args.against else [])
+        checks = run_named(questions, resolution, args.split, args.k,
+                           {"dense": args.index, "bm25": args.bm25_index}, names)
 
     elapsed = time.time() - started
     checks.append((f"whole run under {BUDGET_SECONDS}s (took {elapsed:.1f}s)",

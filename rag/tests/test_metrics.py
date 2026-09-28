@@ -8,9 +8,12 @@ import pytest
 
 from rag.eval.metrics import (
     bootstrap_ci,
+    compare,
     evaluate,
+    format_comparison,
     hit_at_k,
     ndcg,
+    per_question,
     reciprocal_rank,
 )
 
@@ -157,3 +160,97 @@ def test_evaluate_hands_the_number_of_answers_to_ndcg():
 
     assert evaluate(run, relevant)["ndcg@10"].value == pytest.approx(0.69343, abs=1e-5)
     assert evaluate(run, relevant, answers={"q1": 1})["ndcg@10"].value == pytest.approx(0.63093, abs=1e-5)
+
+
+# The paired comparison. B is always the candidate and A the one it is measured
+# against, so a positive difference means B is better.
+
+BETTER_RUN = {
+    "q1": ["a", "x", "y"],                                  # rank 1, as before
+    "q2": ["x", "b", "y"],                                  # rank 2, as before
+    "q3": ["c", "x", "y"],                                  # rank 11 -> rank 1
+    "q4": ["x", "y", "d"],                                  # nothing -> rank 3
+}
+
+
+def test_evaluate_reports_the_mean_of_the_per_question_scores():
+    """evaluate() and compare() read the same per-question scores, so they
+    cannot disagree about what a question scored."""
+    scores = per_question(RUN, RELEVANT)
+
+    assert list(scores) == list(evaluate(RUN, RELEVANT))
+    assert scores["recall@5"] == {"q1": 1.0, "q2": 1.0, "q3": 0.0, "q4": 0.0}
+    assert scores["mrr@10"] == {"q1": 1.0, "q2": 0.5, "q3": 0.0, "q4": 0.0}
+
+
+def test_a_run_compared_with_itself_shows_no_difference():
+    compared = compare(RUN, RUN, RELEVANT)
+
+    for p in compared.values():
+        assert (p.diff, p.low, p.high) == (0.0, 0.0, 0.0)
+        assert (p.better, p.worse, p.same) == (0, 0, 4)
+        assert p.verdict() == "no clear difference"
+
+
+def test_compare_matches_hand_computed_differences():
+    """recall@5: A finds q1, q2; B finds all four. 0.5 -> 1.0, B better on 2.
+    MRR@10: A is (1 + 1/2 + 0 + 0) / 4 = 0.375, B is (1 + 1/2 + 1 + 1/3) / 4 = 0.7083."""
+    compared = compare(RUN, BETTER_RUN, RELEVANT)
+
+    recall = compared["recall@5"]
+    assert (recall.a, recall.b, recall.diff) == (0.5, 1.0, 0.5)
+    assert (recall.better, recall.worse, recall.same) == (2, 0, 2)
+    assert compared["mrr@10"].a == pytest.approx(0.375)
+    assert compared["mrr@10"].b == pytest.approx(0.70833, abs=1e-5)
+    assert compared["mrr@10"].diff == pytest.approx(0.33333, abs=1e-5)
+    assert compared["recall@20"].diff == pytest.approx(0.25)     # only q4 was missing at 20
+
+
+def test_the_verdict_names_the_worse_run_as_worse():
+    """A run that returns nothing, against a perfect one: B loses on every question."""
+    compared = compare(perfect_run(RELEVANT), {}, RELEVANT)
+
+    p = compared["recall@5"]
+    assert (p.diff, p.low, p.high) == (-1.0, -1.0, -1.0)
+    assert (p.better, p.worse, p.same) == (0, 4, 0)
+    assert p.verdict("perfect", "empty") == "perfect better"
+
+
+def test_pairing_separates_what_two_intervals_cannot():
+    """The reason the comparison is paired. 40 questions: A finds 20, B finds the
+    same 20 plus 4 more. Laid side by side, the two intervals overlap, so they
+    cannot tell A from B. Paired, B is better on 4 questions and worse on none,
+    and the interval of the difference sits clear of zero."""
+    relevant = {f"q{i}": {f"a{i}"} for i in range(40)}
+    run_a = {f"q{i}": [f"a{i}"] if i < 20 else ["x"] for i in range(40)}
+    run_b = {f"q{i}": [f"a{i}"] if i < 24 else ["x"] for i in range(40)}
+
+    alone_a = evaluate(run_a, relevant)["recall@5"]
+    alone_b = evaluate(run_b, relevant)["recall@5"]
+    paired = compare(run_a, run_b, relevant)["recall@5"]
+
+    assert alone_b.low < alone_a.high, "side by side, the intervals overlap"
+    assert paired.diff == pytest.approx(0.1)
+    assert paired.low > 0
+    assert paired.verdict("A", "B") == "B better"
+
+
+def test_an_interval_that_touches_zero_names_no_winner():
+    """3 wins of 40: some resamples hold none of the 3, so the interval's lower
+    end is exactly 0. Not clear of zero, so no winner."""
+    relevant = {f"q{i}": {f"a{i}"} for i in range(40)}
+    run_a = {f"q{i}": [f"a{i}"] if i < 20 else ["x"] for i in range(40)}
+    run_b = {f"q{i}": [f"a{i}"] if i < 23 else ["x"] for i in range(40)}
+
+    paired = compare(run_a, run_b, relevant)["recall@5"]
+
+    assert paired.diff > 0 and paired.low == 0.0
+    assert paired.verdict() == "no clear difference"
+
+
+def test_format_comparison_prints_one_row_per_metric_with_its_verdict():
+    text = format_comparison(compare(RUN, BETTER_RUN, RELEVANT), "dense", "hybrid")
+
+    assert "hybrid (B) against dense (A), the same 4 questions" in text
+    assert "recall@5" in text and "ndcg@10" in text
+    assert "+0.500" in text

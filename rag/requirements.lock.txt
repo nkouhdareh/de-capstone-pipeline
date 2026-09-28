@@ -19,6 +19,7 @@ defusedxml==0.7.1
 duckdb==1.5.5
 et_xmlfile==2.0.0
 executing==2.2.1
+faiss-cpu==1.15.1
 fastembed==0.8.1
 fastjsonschema==2.22.2
 filelock==3.32.5
