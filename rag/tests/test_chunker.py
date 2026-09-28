@@ -5,6 +5,9 @@ suite needs no model download, no network and no corpus, and the arithmetic is
 readable. `words` counts whitespace-separated tokens, which is close enough to
 a real tokenizer for testing boundary logic and is exactly predictable.
 """
+import sys
+import types
+
 import pytest
 
 from rag.corpus import chunker
@@ -220,6 +223,33 @@ def test_counter_falls_back_to_characters_when_the_model_is_unavailable(monkeypa
     count = token_counter()
     assert count("") >= 1
     assert count("a" * 40) == 10
+
+
+def test_loader_switches_off_truncation_and_padding(monkeypatch):
+    """arctic's tokenizer.json ships with truncation at 512 and batch padding
+    switched on. For counting, the first reports any long text as exactly 512 and
+    the second reports a batch's longest length for every text in it. A fake
+    `tokenizers` module keeps this test free of downloads and installs."""
+    calls = []
+
+    class FakeTokenizer:
+        @staticmethod
+        def from_pretrained(model_id):
+            return FakeTokenizer()
+
+        def no_truncation(self):
+            calls.append("no_truncation")
+
+        def no_padding(self):
+            calls.append("no_padding")
+
+    monkeypatch.setitem(sys.modules, "tokenizers", types.SimpleNamespace(Tokenizer=FakeTokenizer))
+    chunker._load_tokenizer.cache_clear()
+    try:
+        assert chunker._load_tokenizer("any/model") is not None
+    finally:
+        chunker._load_tokenizer.cache_clear()
+    assert calls == ["no_truncation", "no_padding"]
 
 
 @pytest.mark.parametrize("section", chunker.RX_SECTIONS + OTC_SAFETY_GROUP)

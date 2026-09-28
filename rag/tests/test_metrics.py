@@ -139,3 +139,21 @@ def test_negatives_are_not_scored():
     scored = evaluate({"neg1": ["anything"]}, RELEVANT)
 
     assert scored["recall@5"].n == 4
+
+
+def test_ndcg_counts_copies_of_one_answer_once():
+    """Three labels printing the same sentence are one answer, not three, so
+    stacking the copies at the top earns nothing extra."""
+    copies = {"copy1", "copy2", "copy3"}
+
+    assert ndcg(["copy1", "copy2", "copy3"], copies, answers=1) == 1.0
+    assert ndcg(["other", "copy2", "copy3"], copies, answers=1) == pytest.approx(0.63093, abs=1e-5)
+
+
+def test_evaluate_hands_the_number_of_answers_to_ndcg():
+    """Counted as two answers, the second copy at rank 3 adds gain: 0.6934.
+    Counted as one answer in two copies, only the first hit at rank 2 does: 0.6309."""
+    run, relevant = {"q1": ["x", "a", "a-copy"]}, {"q1": {"a", "a-copy"}}
+
+    assert evaluate(run, relevant)["ndcg@10"].value == pytest.approx(0.69343, abs=1e-5)
+    assert evaluate(run, relevant, answers={"q1": 1})["ndcg@10"].value == pytest.approx(0.63093, abs=1e-5)

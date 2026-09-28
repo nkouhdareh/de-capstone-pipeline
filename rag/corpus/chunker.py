@@ -30,9 +30,10 @@ from functools import lru_cache
 # 2026-09-24: arctic-embed-s replaced BAAI/bge-small-en-v1.5. Same size class,
 # same 512-token window, Apache 2.0, published in the US, which is easier to
 # defend on provenance. 1.1.0 records that the token counter changed.
-# Measured on the swap: both tokenizers carry the same 30,522-token vocabulary
-# and gave identical counts on all 360,916 chunks (max 480), so the chunk table
-# built by 1.0.0 is still valid and was not rebuilt.
+# The two tokenizer.json files share the same 30,522-piece vocabulary (both
+# inherited from Google's BERT), the same lowercasing and the same word
+# splitting, so every count is identical and the chunk table built by 1.0.0 is
+# still valid. They differ only in two presets, switched off in _load_tokenizer.
 EMBED_MODEL = "Snowflake/snowflake-arctic-embed-s"
 CHUNKER_VERSION = "1.1.0"
 
@@ -106,9 +107,16 @@ def _load_tokenizer(model_id: str):
     runs offline on a character estimate rather than failing outright."""
     try:
         from tokenizers import Tokenizer
-        return Tokenizer.from_pretrained(model_id)
+        tok = Tokenizer.from_pretrained(model_id)
     except Exception:  # noqa: BLE001 - any failure means fall back, deliberately
         return None
+    # A tokenizer.json can ship presets meant for embedding: arctic's truncates
+    # at 512 and pads every batch. For counting, both give wrong answers without
+    # an error: truncation reports any long text as exactly 512, and padding
+    # reports the batch's longest length for every text in it.
+    tok.no_truncation()
+    tok.no_padding()
+    return tok
 
 
 def token_counter(model_id: str = EMBED_MODEL, cache_size: int = 8192):

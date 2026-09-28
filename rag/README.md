@@ -14,7 +14,7 @@ built in [ADR-015](../docs/adr/ADR-015-retrieval-extension-not-built.md).
 | 0 Explore the label corpus | **done** |
 | 1 Corpus scoping and chunking | **done** |
 | 2 Gold set and evaluation harness | **done** |
-| 3 Dense retrieval baseline | not started |
+| 3 Dense retrieval baseline | **done** |
 | 4 Hybrid retrieval, vector store decision (ADR-006) | not started |
 | 5 Reranking, diversity, guardrail | not started |
 | 6 Generation and Streamlit tab (ADR-008) | not started |
@@ -96,6 +96,36 @@ itself on two baselines: a retriever that cannot be wrong scores 1.000 on every 
 and one that cannot be right scores 0.000. Metrics are recall@1/5/10/20, MRR@10 and
 nDCG@10, each with a 95% bootstrap interval, because at n=56 on the test split a 3 point
 difference is noise.
+
+### Phase 3 result
+
+Every chunk is embedded with `snowflake-arctic-embed-s` (Snowflake, US, Apache 2.0). It
+replaced the first pick, `BAAI/bge-small-en-v1.5`, for provenance: the same size, the same
+512-token window and the same tokenizer vocabulary, so the Phase 1 chunks stayed valid.
+**360,916 vectors in 10.8 hours** on a laptop CPU, at 9.3 chunks per second in full
+precision. The builder saves every 10,000 chunks and resumes after an interruption, writes a
+manifest per index, and refuses to mix two different builds.
+
+On the 68 answerable dev questions, with exact search at 26 ms per question:
+
+| | recall@1 | recall@5 | recall@10 | recall@20 | MRR@10 | nDCG@10 |
+|---|---|---|---|---|---|---|
+| dense, arctic-embed-s | 0.235 | **0.471** | 0.662 | **0.750** | 0.351 | 0.421 |
+| the same, without the query prefix | 0.191 | 0.382 | 0.485 | 0.618 | 0.286 | 0.331 |
+
+Four findings came from measuring rather than assuming:
+
+- **The first ruler was wrong.** The first run scored 0.294. A third of its misses were
+  correct answers from another manufacturer's label of the same drug, so a question now counts
+  any chunk holding its exact answer text, in the same section, for the same drug. The strict
+  score, the question's own label only, is still printed beside it.
+- **fastembed does not add arctic's query prefix.** That was read from its source, then added
+  in code and pinned by a test. Without it, recall@5 falls from 0.471 to 0.382.
+- **2,732 chunks (0.76%) would have been silently cut** once their header was added, because
+  some drug names run to 237 tokens. The model now reads a compact header, trimmed until every
+  chunk fits.
+- **recall@20 is 0.28 above recall@5.** The answer is often retrieved but ranked too low,
+  which is what a reranker fixes, so Phase 5 is justified by measurement.
 
 ### Known limitation
 

@@ -11,7 +11,14 @@ import json
 
 import pytest
 
-from rag.eval.gold import Anchor, anchors_of, load_gold, match_anchors
+from rag.eval.gold import (
+    Anchor,
+    anchors_of,
+    drug_tokens,
+    load_gold,
+    match_anchors,
+    match_equivalents,
+)
 
 WARNING_TEXT = "May cause drowsiness. Do not drive."
 
@@ -179,3 +186,58 @@ def test_the_committed_gold_set_is_valid_and_balanced():
     assert 0.15 <= len(negatives) / len(questions) <= 0.25
     assert 0.55 <= len(dev) / len(questions) <= 0.65
     assert all(q["anchor"]["answer_span"] for q in questions if q["qtype"] != "negative")
+
+
+def asked(qid="q1", qtype="lookup", drug="DULOXETINE", brand=None):
+    return {"qid": qid, "qtype": qtype, "drug": drug, "brand": brand,
+            "anchor": {"set_id": "s", "section": "adverse_reactions", "answer_span": "bruxism"}}
+
+
+def test_drug_tokens_ignore_salts_and_forms_but_not_a_second_drug():
+    assert drug_tokens("DULOXETINE HYDROCHLORIDE") == drug_tokens("Duloxetine") == {"DULOXETINE"}
+    assert drug_tokens("AMLODIPINE BESYLATE TABLETS") == {"AMLODIPINE"}
+    assert drug_tokens("AMLODIPINE BESYLATE AND BENAZEPRIL") == {"AMLODIPINE", "BENAZEPRIL"}
+    assert drug_tokens(None) == frozenset()
+
+
+def test_the_same_answer_on_another_label_of_the_same_drug_counts():
+    """The case the first dense run exposed: 16 of its 48 misses were this."""
+    rows = [("q1", "other-label", "DULOXETINE HCL", "Cymbalta")]
+
+    assert match_equivalents([asked()], rows) == {"q1": frozenset({"other-label"})}
+
+
+def test_the_same_sentence_for_a_different_drug_does_not_count():
+    rows = [("q1", "c1", "VENLAFAXINE", None)]
+
+    assert match_equivalents([asked()], rows) == {}
+
+
+def test_a_combination_product_is_a_different_drug():
+    rows = [("q1", "c1", "AMLODIPINE BESYLATE AND BENAZEPRIL", None)]
+
+    assert match_equivalents([asked(drug="AMLODIPINE")], rows) == {}
+
+
+def test_identifier_questions_match_on_the_brand():
+    """A brand question names one product. Another brand of the same generic is
+    not the label it asked about."""
+    rows = [("q1", "same-brand", "OXYCODONE AND ACETAMINOPHEN", "Percocet"),
+            ("q1", "other-brand", "OXYCODONE AND ACETAMINOPHEN", "Endocet")]
+    question = asked(qtype="identifier", drug="OXYCODONE AND ACETAMINOPHEN", brand="PERCOCET")
+
+    assert match_equivalents([question], rows) == {"q1": frozenset({"same-brand"})}
+
+
+def test_a_name_with_no_significant_words_never_matches():
+    """SODIUM CHLORIDE is all salt words. Rather than match everything, the
+    question stays strict."""
+    rows = [("q1", "c1", "SODIUM CHLORIDE", None)]
+
+    assert match_equivalents([asked(drug="SODIUM CHLORIDE")], rows) == {}
+
+
+def test_rows_for_questions_without_an_anchor_are_ignored():
+    negative = {"qid": "n1", "qtype": "negative", "drug": "DULOXETINE", "anchor": None}
+
+    assert match_equivalents([negative], [("n1", "c1", "DULOXETINE", None)]) == {}
