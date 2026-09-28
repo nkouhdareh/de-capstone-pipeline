@@ -11,6 +11,7 @@ Every later claim in this project rests on these two lines.
     dense-noprefix   the same without arctic's query instruction, so what the
                      prefix is worth gets measured instead of assumed
     bm25             keyword search over the same chunks (rag/retrieve/sparse.py)
+    hybrid           dense and bm25 fused by RRF, k = 60 (rag/retrieve/fusion.py)
 
 A retriever is any callable (question, k) -> chunk ids, best first. The question
 is the whole gold record, so a real retriever reads question["question"] while
@@ -34,6 +35,7 @@ Usage:
     python -m rag.eval.run_eval --retriever dense        # the dense index, on dev
     python -m rag.eval.run_eval --retriever dense --against dense-noprefix
     python -m rag.eval.run_eval --retriever bm25 --against dense
+    python -m rag.eval.run_eval --retriever hybrid --against dense
     python -m rag.eval.run_eval --retriever dense --split test    # once, at the end
 """
 from __future__ import annotations
@@ -52,7 +54,7 @@ from rag.eval.metrics import KS, compare, evaluate, format_comparison, format_ta
 BUDGET_SECONDS = 60     # the Phase 2 gate: a slow harness stops being run
 RANDOM_SEED = 20260924
 RANDOM_CEILING = 0.05   # a random retriever above this means the gold set leaks
-RETRIEVERS = ("dense", "dense-noprefix", "bm25")
+RETRIEVERS = ("dense", "dense-noprefix", "bm25", "hybrid")
 
 Retriever = Callable[[Mapping, int], Sequence[str]]
 
@@ -132,16 +134,22 @@ def run_baselines(questions: Sequence[Mapping], resolution: Resolution, split: s
 
 
 def load_retriever(name: str, indexes: Mapping, loaded: dict) -> Retriever:
-    """A named retriever. The dense index is 554 MB, so it is read once and shared:
-    dense and dense-noprefix differ only in how the question is embedded."""
+    """A named retriever. Each index is read once and shared: dense and
+    dense-noprefix differ only in how the question is embedded, and hybrid is
+    the dense and bm25 retrievers themselves, fused."""
+    if name == "hybrid":
+        from rag.retrieve.fusion import HybridRetriever
+        return HybridRetriever(load_retriever("dense", indexes, loaded),
+                               load_retriever("bm25", indexes, loaded))
     if name == "bm25":
-        from rag.retrieve.sparse import INDEX, SparseRetriever
-        started = time.time()
-        retriever = SparseRetriever(indexes.get("bm25") or INDEX)
-        manifest = retriever.manifest
-        print(f"index: {manifest['index']}, {len(retriever.ids):,} chunks, "
-              f"{manifest['n_terms']:,} terms, loaded in {time.time() - started:.1f}s")
-        return retriever
+        if "bm25" not in loaded:
+            from rag.retrieve.sparse import INDEX, SparseRetriever
+            started = time.time()
+            loaded["bm25"] = SparseRetriever(indexes.get("bm25") or INDEX)
+            manifest = loaded["bm25"].manifest
+            print(f"index: {manifest['index']}, {len(loaded['bm25'].ids):,} chunks, "
+                  f"{manifest['n_terms']:,} terms, loaded in {time.time() - started:.1f}s")
+        return loaded["bm25"]
     index = indexes.get("dense")
     if "dense" not in loaded:
         from rag.retrieve.dense import INDEX, DenseRetriever
