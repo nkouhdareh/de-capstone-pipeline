@@ -97,7 +97,7 @@ def score_all(query: Sequence[str], docs: Sequence[Sequence[str]],
     return scores
 
 
-def distinct(tokens: Iterable[str]) -> list[str]:
+def distinct(terms: Iterable[str]) -> list[str]:
     """A question's distinct terms, in first-seen order. Repeating a word in a
     question does not make it count twice."""
-    return list(dict.fromkeys(tokens))
+    return list(dict.fromkeys(terms))
