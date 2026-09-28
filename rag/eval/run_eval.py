@@ -10,6 +10,7 @@ Every later claim in this project rests on these two lines.
     dense            arctic-embed-s, exact search over all 360,916 chunks
     dense-noprefix   the same without arctic's query instruction, so what the
                      prefix is worth gets measured instead of assumed
+    bm25             keyword search over the same chunks (rag/retrieve/sparse.py)
 
 A retriever is any callable (question, k) -> chunk ids, best first. The question
 is the whole gold record, so a real retriever reads question["question"] while
@@ -32,6 +33,7 @@ Usage:
     python -m rag.eval.run_eval                          # the two baselines, on dev
     python -m rag.eval.run_eval --retriever dense        # the dense index, on dev
     python -m rag.eval.run_eval --retriever dense --against dense-noprefix
+    python -m rag.eval.run_eval --retriever bm25 --against dense
     python -m rag.eval.run_eval --retriever dense --split test    # once, at the end
 """
 from __future__ import annotations
@@ -50,7 +52,7 @@ from rag.eval.metrics import KS, compare, evaluate, format_comparison, format_ta
 BUDGET_SECONDS = 60     # the Phase 2 gate: a slow harness stops being run
 RANDOM_SEED = 20260924
 RANDOM_CEILING = 0.05   # a random retriever above this means the gold set leaks
-RETRIEVERS = ("dense", "dense-noprefix")
+RETRIEVERS = ("dense", "dense-noprefix", "bm25")
 
 Retriever = Callable[[Mapping, int], Sequence[str]]
 
@@ -129,9 +131,18 @@ def run_baselines(questions: Sequence[Mapping], resolution: Resolution, split: s
     ]
 
 
-def load_retriever(name: str, index: Path | None, loaded: dict) -> Retriever:
-    """A named retriever. The index is 554 MB, so it is read once and shared:
+def load_retriever(name: str, indexes: Mapping, loaded: dict) -> Retriever:
+    """A named retriever. The dense index is 554 MB, so it is read once and shared:
     dense and dense-noprefix differ only in how the question is embedded."""
+    if name == "bm25":
+        from rag.retrieve.sparse import INDEX, SparseRetriever
+        started = time.time()
+        retriever = SparseRetriever(indexes.get("bm25") or INDEX)
+        manifest = retriever.manifest
+        print(f"index: {manifest['index']}, {len(retriever.ids):,} chunks, "
+              f"{manifest['n_terms']:,} terms, loaded in {time.time() - started:.1f}s")
+        return retriever
+    index = indexes.get("dense")
     if "dense" not in loaded:
         from rag.retrieve.dense import INDEX, DenseRetriever
         started = time.time()
@@ -163,12 +174,12 @@ def report(name: str, run: Mapping, questions: Sequence[Mapping], resolution: Re
 
 
 def run_named(questions: Sequence[Mapping], resolution: Resolution, split: str, k: int,
-              index: Path | None, names: Sequence[str]) -> list[tuple[str, bool]]:
+              indexes: Mapping, names: Sequence[str]) -> list[tuple[str, bool]]:
     """Score each named retriever. With two names, the first is B, the second A,
     and the paired comparison of B against A is printed last."""
     loaded, runs = {}, {}
     for name in names:
-        retriever = load_retriever(name, index, loaded)
+        retriever = load_retriever(name, indexes, loaded)
         searched = time.time()
         runs[name] = run_retriever(questions, retriever, k)
         report(name, runs[name], questions, resolution, split,
@@ -195,6 +206,8 @@ def main() -> None:
                              "(B) against this one (A), on the same questions")
     parser.add_argument("--index", type=Path,
                         help="index folder for dense; default the full arctic-s-fp32 index")
+    parser.add_argument("--bm25-index", type=Path,
+                        help="index folder for bm25; default data/rag/index/bm25-v1")
     args = parser.parse_args()
     if args.against and args.retriever == "baselines":
         parser.error("--against compares two real retrievers; pick one with --retriever")
@@ -212,7 +225,8 @@ def main() -> None:
         checks = run_baselines(questions, resolution, args.split, args.k)
     else:
         names = [args.retriever] + ([args.against] if args.against else [])
-        checks = run_named(questions, resolution, args.split, args.k, args.index, names)
+        checks = run_named(questions, resolution, args.split, args.k,
+                           {"dense": args.index, "bm25": args.bm25_index}, names)
 
     elapsed = time.time() - started
     checks.append((f"whole run under {BUDGET_SECONDS}s (took {elapsed:.1f}s)",

@@ -1,5 +1,5 @@
-# RAG extension: Phases 0-3 (explore, chunk, gold set and eval harness, dense
-# retrieval).
+# RAG extension: Phases 0-4 (explore, chunk, gold set and eval harness, dense
+# retrieval, BM25).
 #
 # Vector-store packages are deliberately left out until Phase 4 chooses a store
 # on evidence. See rag/README.md for phase status.
@@ -39,10 +39,15 @@ tqdm>=4.66
 fastembed>=0.8
 numpy>=1.26
 
+# --- keyword retrieval (Phase 4) ---
+# BM25 is hand-rolled on numpy in rag/retrieve/sparse.py, so no BM25 library.
+# py-rust-stemmers is the Snowball English stemmer (Qdrant, MIT). fastembed
+# already pulls it in; it is listed because sparse.py now uses it directly.
+py-rust-stemmers>=0.1
+
 # --- tests ---
 pytest>=8.0
 
 # --- Phase 4+ (NOT installed yet, listed so the trajectory is explicit) ---
 # qdrant-client          # vector store, Phase 4
-# bm25s                  # fast local BM25 for store-independent Experiment A
 # sentence-transformers  # only if torch-based models (MedCPT, EmbeddingGemma) are benchmarked
