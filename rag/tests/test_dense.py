@@ -104,3 +104,10 @@ def test_ids_and_vectors_out_of_step_are_refused(tmp_path):
 
     with pytest.raises(ValueError, match="chunk ids for"):
         DenseRetriever(index, model=FakeModel([1, 0, 0]))
+
+
+def test_vectors_of_returns_the_rows_of_the_given_chunks_in_order(tmp_path):
+    retriever = DenseRetriever(write_index(tmp_path, AXES, ["a", "b", "c"]),
+                               model=FakeModel([1, 0, 0]))
+
+    assert retriever.vectors_of(["c", "a"]).tolist() == [[0, 0, 1], [1, 0, 0]]
