@@ -5,7 +5,14 @@ fusion only ever sees two ranked lists of (chunk_id, score).
 """
 import pytest
 
-from rag.retrieve.fusion import HybridRetriever, fuse, normalise, rrf, weighted_sum
+from rag.retrieve.fusion import (
+    HybridRetriever,
+    collapse_near_copies,
+    fuse,
+    normalise,
+    rrf,
+    weighted_sum,
+)
 
 
 def test_rrf_by_hand():
@@ -110,3 +117,45 @@ def test_hybrid_puts_a_chunk_both_retrievers_found_first():
     sparse = FakeRetriever([("y", 20.0), ("both", 15.0)])
 
     assert HybridRetriever(dense, sparse)({"question": "q"}, 3)[0] == "both"
+
+
+# Near-copy collapse. A similarity table stands in for the dense vectors.
+
+def similarity_from(pairs, default=0.5):
+    table = {frozenset(pair): value for pair, value in pairs.items()}
+    return lambda i, j: table.get(frozenset((i, j)), default)
+
+
+def test_collapse_drops_a_near_copy_of_a_higher_chunk_and_keeps_order():
+    """0 and 1 are copies; 3 copies 2. Kept: 0, 2, 4."""
+    similar = similarity_from({(0, 1): 0.99, (2, 3): 0.97})
+
+    assert collapse_near_copies(5, similar, threshold=0.95, k=10) == [0, 2, 4]
+
+
+def test_collapse_stops_at_k_and_keeps_everything_below_the_threshold():
+    assert collapse_near_copies(5, similarity_from({}), threshold=0.95, k=3) == [0, 1, 2]
+    assert collapse_near_copies(3, similarity_from({(0, 1): 0.95}), threshold=0.95, k=3) == [0, 1, 2]
+
+
+class FakeDense(FakeRetriever):
+    """A dense retriever whose vectors are unit vectors given per chunk."""
+
+    def __init__(self, scored, vectors):
+        super().__init__(scored)
+        self.vectors = vectors
+
+    def vectors_of(self, chunk_ids):
+        np = pytest.importorskip("numpy")
+        return np.array([self.vectors[chunk_id] for chunk_id in chunk_ids], dtype=float)
+
+
+def test_hybrid_with_collapse_returns_one_of_each_pair_of_copies():
+    pytest.importorskip("numpy")
+    dense = FakeDense([("a", 0.9), ("a-copy", 0.89), ("b", 0.5)],
+                      {"a": [1, 0], "a-copy": [1, 0], "b": [0, 1], "c": [0.6, 0.8]})
+    sparse = FakeRetriever([("a-copy", 9.0), ("c", 8.0)])
+
+    ids = HybridRetriever(dense, sparse, collapse_above=0.95)({"question": "q"}, 3)
+
+    assert ids == ["a-copy", "c", "b"]

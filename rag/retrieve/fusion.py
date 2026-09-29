@@ -24,17 +24,24 @@ it, as if it scored as low as that list's worst. Two normalisations:
     dbsf     Qdrant's distribution-based score fusion: mean - 3 std maps to 0
              and mean + 3 std to 1, clipped, so one outlier cannot squash the rest
 
+Near-copies are collapsed after fusing (Phase 5). Generic labels print the same
+paragraph with small differences, so without this 54% of hybrid's top-5 places on
+dev held a near-copy of a chunk ranked above it: five places, one piece of
+evidence. Walking the fused ranking best first, a chunk is kept only if its
+cosine similarity with every chunk already kept is at most COLLAPSE_ABOVE.
+
 Pure Python, no numpy: a fused list is at most 200 chunks, and keeping it pure
-lets the tests run in CI.
+lets the tests run in CI. The similarities come from the dense retriever.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from statistics import fmean, pstdev
 
 RRF_K = 60
 DEPTH = 100          # candidates taken from each retriever before fusing
 DENSE_WEIGHT = 0.5
+COLLAPSE_ABOVE = 0.95   # cosine above which a chunk is a near-copy of one ranked higher
 
 Scored = Sequence[tuple[str, float]]    # (chunk_id, score), best first
 
@@ -83,20 +90,43 @@ def fuse(dense: Scored, sparse: Scored, method: str = "rrf", rrf_k: float = RRF_
     return weighted_sum(dense, sparse, dense_weight, method)
 
 
+def collapse_near_copies(n: int, similarity: Callable[[int, int], float], threshold: float,
+                         k: int) -> list[int]:
+    """Positions 0 to n-1 of a ranking, best first, keeping each only if it is not a
+    near-copy (similarity above threshold) of a position already kept, until k are
+    kept. Returns the kept positions, still best first."""
+    kept: list[int] = []
+    for i in range(n):
+        if all(similarity(i, j) <= threshold for j in kept):
+            kept.append(i)
+            if len(kept) == k:
+                break
+    return kept
+
+
 class HybridRetriever:
     """Any two retrievers with search(question, k) -> [(chunk_id, score)], fused.
-    method is "rrf", "minmax" or "dbsf"."""
+    method is "rrf", "minmax" or "dbsf". With collapse_above set, near-copies are
+    dropped after fusing, using the dense retriever's vectors_of()."""
 
     def __init__(self, dense, sparse, method: str = "rrf", rrf_k: float = RRF_K,
-                 dense_weight: float = DENSE_WEIGHT, depth: int = DEPTH):
+                 dense_weight: float = DENSE_WEIGHT, depth: int = DEPTH,
+                 collapse_above: float | None = None):
         self.dense, self.sparse = dense, sparse
         self.method, self.rrf_k, self.dense_weight, self.depth = method, rrf_k, dense_weight, depth
+        self.collapse_above = collapse_above
 
     def search(self, question: str, k: int = 20) -> list[str]:
         depth = max(k, self.depth)
         fused = fuse(self.dense.search(question, depth), self.sparse.search(question, depth),
                      self.method, self.rrf_k, self.dense_weight)
-        return fused[:k]
+        if self.collapse_above is None:
+            return fused[:k]
+        vectors = self.dense.vectors_of(fused)
+        cosine = vectors @ vectors.T
+        kept = collapse_near_copies(len(fused), lambda i, j: float(cosine[i, j]),
+                                    self.collapse_above, k)
+        return [fused[i] for i in kept]
 
     def __call__(self, question: Mapping, k: int) -> list[str]:
         """The retriever interface run_eval expects: a gold record in, chunk ids out."""

@@ -12,6 +12,7 @@ Every later claim in this project rests on these two lines.
                      prefix is worth gets measured instead of assumed
     bm25             keyword search over the same chunks (rag/retrieve/sparse.py)
     hybrid           dense and bm25 fused by RRF, k = 60 (rag/retrieve/fusion.py)
+    hybrid-dedup     the same, with near-copies collapsed (cosine above 0.95)
 
 A retriever is any callable (question, k) -> chunk ids, best first. The question
 is the whole gold record, so a real retriever reads question["question"] while
@@ -36,6 +37,7 @@ Usage:
     python -m rag.eval.run_eval --retriever dense --against dense-noprefix
     python -m rag.eval.run_eval --retriever bm25 --against dense
     python -m rag.eval.run_eval --retriever hybrid --against dense
+    python -m rag.eval.run_eval --retriever hybrid-dedup --against hybrid
     python -m rag.eval.run_eval --retriever dense --split test    # once, at the end
 """
 from __future__ import annotations
@@ -54,7 +56,7 @@ from rag.eval.metrics import KS, compare, evaluate, format_comparison, format_ta
 BUDGET_SECONDS = 60     # the Phase 2 gate: a slow harness stops being run
 RANDOM_SEED = 20260924
 RANDOM_CEILING = 0.05   # a random retriever above this means the gold set leaks
-RETRIEVERS = ("dense", "dense-noprefix", "bm25", "hybrid")
+RETRIEVERS = ("dense", "dense-noprefix", "bm25", "hybrid", "hybrid-dedup")
 
 Retriever = Callable[[Mapping, int], Sequence[str]]
 
@@ -137,10 +139,11 @@ def load_retriever(name: str, indexes: Mapping, loaded: dict) -> Retriever:
     """A named retriever. Each index is read once and shared: dense and
     dense-noprefix differ only in how the question is embedded, and hybrid is
     the dense and bm25 retrievers themselves, fused."""
-    if name == "hybrid":
-        from rag.retrieve.fusion import HybridRetriever
+    if name in ("hybrid", "hybrid-dedup"):
+        from rag.retrieve.fusion import COLLAPSE_ABOVE, HybridRetriever
         return HybridRetriever(load_retriever("dense", indexes, loaded),
-                               load_retriever("bm25", indexes, loaded))
+                               load_retriever("bm25", indexes, loaded),
+                               collapse_above=COLLAPSE_ABOVE if name == "hybrid-dedup" else None)
     if name == "bm25":
         if "bm25" not in loaded:
             from rag.retrieve.sparse import INDEX, SparseRetriever

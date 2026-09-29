@@ -16,7 +16,7 @@ built in [ADR-015](../docs/adr/ADR-015-retrieval-extension-not-built.md).
 | 2 Gold set and evaluation harness | **done** |
 | 3 Dense retrieval baseline | **done** |
 | 4 Hybrid retrieval, vector store decision (ADR-016) | **done** |
-| 5 Reranking, diversity, guardrail | not started |
+| 5 Reranking, diversity, guardrail | **done** |
 | 6 Generation and Streamlit tab (ADR-017) | not started |
 
 Nothing here is wired into the dashboard yet.
@@ -159,6 +159,34 @@ and worse on 1; nDCG@10 +0.083 [+0.017, +0.150].
 - **No separate vector store** (ADR-016, written up in Phase 7). Exact search takes 19 ms and is
   always right. faiss HNSW takes 0.4 ms but finds 0.939 of the exact top 20, and none of it
   for one question, for a saving nobody sees next to an LLM answer.
+
+### Phase 5 result
+
+Before fixing the ranking, its failures were sorted. On hybrid's top 5, **54% of the places
+held a near-copy** (cosine above 0.95) of a chunk ranked above it: the same paragraph from
+another manufacturer. Walking the ranking and skipping such copies (hybrid-dedup) lifts
+recall@5 from 0.588 to **0.706**, paired +0.118 [+0.029, +0.206], at no measurable cost. MMR
+did not help.
+
+| on the 68 answerable dev questions | recall@5 | MRR@10 | time per question |
+|---|---|---|---|
+| hybrid | 0.588 | 0.446 | 34 ms |
+| **hybrid-dedup (the default)** | **0.706** | **0.483** | 34 ms |
+| reranker over the top 20, then dedup | 0.721 | 0.539 | 1.4 s |
+| reranker over the top 50, then dedup | 0.809 | 0.562 | 4.3 s |
+
+- **The reranker was measured and kept out of the default.** A cross-encoder
+  (`ms-marco-MiniLM-L-6-v2`, sentence-transformers team, Germany, on Microsoft's MiniLM) reads
+  question and chunk together at about 100 ms a pair on this CPU. Over the top 50 it reaches
+  recall@5 0.809, but against hybrid-dedup that is +0.103 [+0.000, +0.206], and five cheaper
+  settings gained nothing clear. Collapsing near-copies had already done most of its job.
+- **Collapse must come last.** Collapsing before reranking drops 8 answers: the only chunk
+  holding an answer can be a near-copy of a wrong chunk above it.
+- **A refusal guardrail (BR-17, TR-55)** refuses when the question uses a word no chunk
+  contains (a drug with no label here, such as gliclazide) or when the best cosine is below
+  0.72. On dev it refuses **14 of 15 negatives** and wrongly refuses 2 of 68 answerable
+  questions. The reranker's score separated worse (AUC 0.86 against cosine's 0.93). The cut was
+  set on dev; the test split judges it once, at the end.
 
 ### Known limitation
 

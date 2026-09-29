@@ -21,7 +21,7 @@ Usage, and the retriever behind `python -m rag.eval.run_eval --retriever dense`:
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -67,6 +67,7 @@ class DenseRetriever:
         if len(self.ids) != self.vectors.shape[0]:
             raise ValueError(f"{len(self.ids):,} chunk ids for {self.vectors.shape[0]:,} vectors")
         self.use_prefix = use_prefix
+        self._row: dict[str, int] | None = None
         if model is None:
             from rag.index.build_index import load_model
             model = load_model(self.manifest["precision"], threads)
@@ -84,3 +85,10 @@ class DenseRetriever:
     def __call__(self, question: Mapping, k: int) -> list[str]:
         """The retriever interface run_eval expects: a gold record in, chunk ids out."""
         return [chunk_id for chunk_id, _ in self.search(question["question"], k)]
+
+    def vectors_of(self, chunk_ids: Sequence[str]) -> np.ndarray:
+        """The stored vectors of these chunks, in the order given. The id-to-row map
+        is built on first use, so a plain search never pays for it."""
+        if self._row is None:
+            self._row = {chunk_id: i for i, chunk_id in enumerate(self.ids)}
+        return self.vectors[[self._row[chunk_id] for chunk_id in chunk_ids]]
