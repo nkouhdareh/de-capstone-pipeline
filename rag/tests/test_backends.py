@@ -26,6 +26,7 @@ def test_ollama_sends_both_messages_at_temperature_zero_and_reads_the_reply():
     assert url.endswith("/api/chat")
     assert [m["role"] for m in body["messages"]] == ["system", "user"]
     assert body["options"]["temperature"] == 0 and body["stream"] is False
+    assert body["options"]["num_predict"] == backends.MAX_ANSWER_TOKENS
     assert generation.text == "Hypomagnesemia was reported [1]."
     assert (generation.prompt_tokens, generation.answer_tokens) == (2216, 9)
     assert generation.backend == "ollama/llama3.2:3b"

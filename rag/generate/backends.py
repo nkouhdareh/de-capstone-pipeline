@@ -51,7 +51,7 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "openai/gpt-oss-120b"
 GROQ_KEY = "GROQ_API_KEY"               # the NAME of the environment variable, not a key
 USER_AGENT = "de-capstone-rag/1.0"
-MAX_ANSWER_TOKENS = 1500    # the answer, plus the model's own brief reasoning
+MAX_ANSWER_TOKENS = 1500    # the answer, plus the model's own brief reasoning; both backends
 RETRIES = 6
 DEFAULT_WAIT = 20.0
 MAX_WAIT = 120.0
@@ -116,7 +116,10 @@ class OllamaBackend:
             "model": self.model,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "stream": False,
-            "options": {"temperature": 0, "seed": 0, "num_ctx": CONTEXT},
+            # num_predict: without a cap, a model that falls into repeating itself
+            # writes until the request times out
+            "options": {"temperature": 0, "seed": 0, "num_ctx": CONTEXT,
+                        "num_predict": MAX_ANSWER_TOKENS},
         }
         started = time.perf_counter()
         reply = self.post(self.url, body)
