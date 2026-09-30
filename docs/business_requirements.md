@@ -9,6 +9,7 @@
 | **Version** | **1.0 — final, reconciled against what was delivered** |
 | **Originally drafted** | 3 August 2026 (v0.1, Gate 1) |
 | **This revision** | 19 August 2026 |
+| **Retrieval update** | 30 September 2026: BO-4, BR-16, BR-17 and a note in §8 only, after the extension was built |
 | **Delivery window** | 3 – 24 August 2026 |
 
 > **What changed from v0.1.** The requirements themselves are unchanged — they were
@@ -98,7 +99,7 @@ A pharmacovigilance team performs a recurring cycle:
 | **BO-1** | Produce a single trustworthy view of adverse event reports | One row per unique safety case; duplicates removed and counted | ✅ **Met.** Grain key unique across all 45,030,932 rows; 48,335,706 duplicates removed and reported per month |
 | **BO-2** | Attribute reports to consistent product identities | Free-text drug names resolved to a normalised drug dimension | ✅ **Met.** `dim_drug` holds 4,368 identities; 86.7 % of rows resolved, rate published |
 | **BO-3** | Quantify potential safety signals using accepted methods | PRR and ROR computed per drug–event pair with case counts | ✅ **Met.** 1,240,645 pairs scored; 315,270 flagged as candidates |
-| **BO-4** | Reduce labelled-status assessment from document reading to a question | Analyst receives a cited answer from label text | ❌ **Not met.** Extension not built — §8, [ADR-015](adr/ADR-015-retrieval-extension-not-built.md) |
+| **BO-4** | Reduce labelled-status assessment from document reading to a question | Analyst receives a cited answer from label text | ⚠️ **Not met at submission; met afterwards.** Since September 2026 a local dashboard tab answers label questions with a citation on every sentence, checked by code: see §8 |
 | **BO-5** | Deliver refreshed data without manual intervention | Scheduled pipeline runs unattended and reports its own status | ⚠️ **Partially met.** One trigger runs all eight tasks unattended in 3 h 57 m and logs what it produced — but the trigger is manual, not scheduled |
 
 ---
@@ -131,8 +132,8 @@ Legend: ✅ met · ⚠️ partially met · ❌ not met
 | BR-13 | Allow analysis by reporter type and reporting country | Should | ✅ | `dim_reporter`, 726 rows, FK-tested from the fact table |
 | BR-14 | Express metric definitions once, so all consumers see identical figures | Must | ✅ | All formulas live in `macros/signal_metrics.sql`. The dashboards compute nothing. Verified: local app, hosted app and warehouse all return PRR 35.94 for clozapine → neutropenia |
 | BR-15 | Present results through a user interface requiring no SQL | Must | ✅ | Three dashboards; the hosted one is a URL requiring no local setup |
-| BR-16 | Answer natural-language questions about label content, citing the source section | Should | ❌ | **Not delivered** — §8, [ADR-015](adr/ADR-015-retrieval-extension-not-built.md) |
-| BR-17 | State when a question falls outside indexed scope rather than answering speculatively | Must (if BR-16 delivered) | ➖ | **Not applicable** — conditional on BR-16 |
+| BR-16 | Answer natural-language questions about label content, citing the source section | Should | ⚠️ | **Not delivered at submission; delivered afterwards.** The "Ask the labels" tab answers from label text and cites the label section for every sentence. Local dashboard only, not the hosted one: see §8 |
+| BR-17 | State when a question falls outside indexed scope rather than answering speculatively | Must (if BR-16 delivered) | ✅ | **Delivered with BR-16.** A guardrail refuses before any answer is written. On held-out test questions it refused 9 of 10 that no label answers, and wrongly refused 2 of 46 that a label does answer |
 
 ### 5.3 Operations
 
@@ -231,6 +232,14 @@ retrieval demo built during a change freeze is worth less than an honest absence
 
 Full reasoning, including what would be built first if the project resumed:
 [ADR-015](adr/ADR-015-retrieval-extension-not-built.md).
+
+> **Update, 30 September 2026.** The record above stands for the capstone and is not rewritten.
+> After submission the extension was built as a portfolio piece under `rag/`, with the evaluation
+> set first. BR-16 and BR-17 are now delivered in a local dashboard tab. On held-out test
+> questions, scored once, the right label passage is among the top five results for 61% of
+> questions (recall@5 0.609), and 9 of 10 questions that no label answers are refused. Every
+> figure and how to reproduce it: `rag/README.md`, [ADR-016](adr/ADR-016-no-vector-store-exact-search.md)
+> and [ADR-017](adr/ADR-017-hosted-generation-local-fallback.md).
 
 ---
 
