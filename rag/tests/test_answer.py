@@ -130,3 +130,24 @@ def test_to_record_flattens_an_answer_for_the_jsonl():
     assert row["qid"] == "d078" and row["sources"] == ["c1", "c2"] and row["citations_ok"]
     assert row["sentences"][0]["cited"] == [1] and row["sentences"][0]["supported"]
     assert row["backend"] == "fake" and row["seconds"] >= 0
+
+
+def test_span_recall_is_the_weighted_share_of_the_gold_span_in_the_answer():
+    """Span words: maximum, daily, dose, 450, mg. The answer has all but 'daily'.
+    Counted equally that is 4 of 5; with 450 weighted 6 and the rest 1, 9 of 10."""
+    from rag.eval.answer_eval import span_recall
+
+    answer = "The maximum dose should not exceed 450 mg [1]."
+    span = "maximum daily dose of 450 mg"
+
+    assert span_recall(answer, span) == 0.8
+    assert span_recall(answer, span, weight=lambda word: 6.0 if word == "450" else 1.0) == 0.9
+    assert span_recall("Nothing relevant.", span) == 0.0
+
+
+def test_summarise_counts_answers_that_state_the_gold_answer():
+    relevant = {"a1": {"c1"}, "a2": {"c9"}}
+
+    counts = summarise([record("a1"), record("a2")], relevant, stated=["a2"])
+
+    assert counts["answerable stating the gold answer"] == 1
