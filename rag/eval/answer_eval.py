@@ -31,6 +31,7 @@ Usage:
     python -m rag.eval.answer_eval --out D:/capstone/data/rag/answers/ollama-dev.jsonl
     python -m rag.eval.answer_eval --out ... --limit 5      # a first look
     python -m rag.eval.answer_eval --backend groq --out D:/capstone/data/rag/answers/groq-dev.jsonl
+    python -m rag.eval.answer_eval --split test --out ...   # once, at the end
 
 One file per backend: a file holds one backend's answers, and the run refuses
 to add another backend's answers to it.
@@ -155,7 +156,9 @@ def main() -> None:
     from rag.retrieve.guardrail import Guardrail
     from rag.retrieve.rerank import ChunkTexts
 
-    parser = argparse.ArgumentParser(description="Score whole answers on dev.")
+    parser = argparse.ArgumentParser(description="Score whole answers.")
+    parser.add_argument("--split", choices=("dev", "test"), default="dev",
+                        help="dev while choosing; test once, at the end")
     parser.add_argument("--out", type=Path, required=True, help="JSONL of answers; appended to, resumable")
     parser.add_argument("--limit", type=int, default=0, help="only the first N questions")
     parser.add_argument("--backend", choices=("ollama", "groq"), default="ollama",
@@ -164,7 +167,7 @@ def main() -> None:
                         help="score the saved answers again with the current citation check; no model is called")
     args = parser.parse_args()
 
-    questions = load_gold(split="dev")
+    questions = load_gold(split=args.split)
     if args.limit:
         questions = questions[:args.limit]
     resolution = resolve(questions)
@@ -173,7 +176,7 @@ def main() -> None:
         with open(args.out, encoding="utf-8") as fh:
             done = {row["qid"]: row for row in map(json.loads, fh)}
     todo = [q for q in questions if q["qid"] not in done]
-    print(f"{len(questions)} dev questions, {len(done)} already answered in {args.out.name}, {len(todo)} to go")
+    print(f"{len(questions)} {args.split} questions, {len(done)} already answered in {args.out.name}, {len(todo)} to go")
 
     loaded: dict = {}
     if args.recheck and done:
