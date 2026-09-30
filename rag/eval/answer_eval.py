@@ -28,6 +28,10 @@ full dev run is over an hour and must survive an interruption.
 Usage:
     python -m rag.eval.answer_eval --out D:/capstone/data/rag/answers/ollama-dev.jsonl
     python -m rag.eval.answer_eval --out ... --limit 5      # a first look
+    python -m rag.eval.answer_eval --backend groq --out D:/capstone/data/rag/answers/groq-dev.jsonl
+
+One file per backend: a file holds one backend's answers, and the run refuses
+to add another backend's answers to it.
 """
 from __future__ import annotations
 
@@ -115,7 +119,7 @@ def main() -> None:
     from rag.eval.gold import load_gold, resolve
     from rag.eval.run_eval import load_retriever
     from rag.generate.answer import Answerer, idf_weight
-    from rag.generate.backends import OllamaBackend
+    from rag.generate.backends import make_backend
     from rag.generate.prompt import MIN_SUPPORT
     from rag.retrieve.guardrail import Guardrail
     from rag.retrieve.rerank import ChunkTexts
@@ -123,6 +127,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Score whole answers on dev.")
     parser.add_argument("--out", type=Path, required=True, help="JSONL of answers; appended to, resumable")
     parser.add_argument("--limit", type=int, default=0, help="only the first N questions")
+    parser.add_argument("--backend", choices=("ollama", "groq"), default="ollama",
+                        help="ollama: the local model; groq: the hosted one, needs GROQ_API_KEY in .env")
     args = parser.parse_args()
 
     questions = load_gold(split="dev")
@@ -138,9 +144,13 @@ def main() -> None:
 
     loaded: dict = {}
     if todo:
+        backend = make_backend(args.backend)
+        others = {row["backend"] for row in done.values() if row["backend"]} - {backend.name}
+        if others:
+            raise SystemExit(f"{args.out} holds answers from {sorted(others)}; give {backend.name} its own file")
         retriever = load_retriever("hybrid-dedup", {}, loaded)
         answerer = Answerer(retriever, Guardrail(loaded["dense"], loaded["bm25"]), ChunkTexts(),
-                            OllamaBackend(), stem=loaded["bm25"].stem, weight=idf_weight(loaded["bm25"]))
+                            backend, stem=loaded["bm25"].stem, weight=idf_weight(loaded["bm25"]))
         args.out.parent.mkdir(parents=True, exist_ok=True)
         with open(args.out, "a", encoding="utf-8") as fh:
             for n, question in enumerate(todo, start=1):
@@ -158,13 +168,13 @@ def main() -> None:
     stated = [r["qid"] for r in records if r["qid"] in spans and not r["refused_by"]
               and span_recall(r["answer"], spans[r["qid"]], sparse.stem, weight) >= STATES_GOLD]
     counts = summarise(records, resolution.relevant, stated)
-    backend = next((r["backend"] for r in records if r["backend"]), "none")
+    used = next((r["backend"] for r in records if r["backend"]), "none")
     seconds = [r["seconds"] for r in records if r["backend"]]
 
     def line(label: str, key: str, of: str) -> None:
         print(f"  {label:<46} {counts.get(key, 0):>3} of {counts.get(of, 0)}")
 
-    print(f"\nbackend: {backend}")
+    print(f"\nbackend: {used}")
     line("negatives refused by the guardrail", "negative refused by guardrail", "negative")
     line("negatives refused by the model", "negative refused by model", "negative")
     line("negatives ANSWERED", "negative answered", "negative")
