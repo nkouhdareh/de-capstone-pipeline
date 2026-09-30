@@ -22,7 +22,13 @@ from collections.abc import Callable
 from typing import NamedTuple
 
 from rag.generate.backends import Backend, Generation
-from rag.generate.prompt import CitationReport, Source, build_prompt, check_citations
+from rag.generate.prompt import (
+    CitationReport,
+    Source,
+    build_prompt,
+    check_citations,
+    normalise_citations,
+)
 from rag.retrieve.guardrail import Verdict
 
 K = 5
@@ -83,6 +89,7 @@ class Answerer:
             texts = [self.texts[chunk_id] for chunk_id in chunk_ids]
         sources = tuple(Source(chunk_id, text) for chunk_id, text in zip(chunk_ids, texts))
         generation = self.backend.generate(*build_prompt(question, sources))
-        report = check_citations(generation.text, sources, question, self.stem, self.weight)
-        return Answer(question, generation.text, "model" if report.refused else None, sources, report,
+        text = normalise_citations(generation.text)      # the reader sees [1], whatever the model wrote
+        report = check_citations(text, sources, question, self.stem, self.weight)
+        return Answer(question, text, "model" if report.refused else None, sources, report,
                       verdict, generation, time.perf_counter() - started)

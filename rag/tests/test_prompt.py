@@ -90,3 +90,22 @@ def test_a_rare_unsupported_word_outweighs_common_supported_ones():
 
     assert plain.checks[0].support > 0.5
     assert weighted.checks[0].support == 0.2 and weighted.unsupported == 1
+
+
+def test_a_models_own_citation_style_is_read_as_a_citation():
+    """gpt-oss writes full-width brackets, sometimes with a dagger and a line
+    range: U+3010 1 U+2020 L1-L4 U+3011. They mean [1]."""
+    from rag.generate.prompt import normalise_citations
+
+    answer = "Hypomagnesemia has been reported\u30101\u2020L1-L4\u3011\u30102\u3011. Monitor magnesium [1]."
+
+    assert normalise_citations(answer) == "Hypomagnesemia has been reported[1][2]. Monitor magnesium [1]."
+    report = check_citations(answer, SOURCES, QUESTION)
+    assert report.uncited == 0 and report.checks[0].cited == (1, 2)
+
+
+def test_a_sentence_with_nothing_to_back_needs_no_citation():
+    """'Yes.' makes no claim a source could support, so it is not an uncited sentence."""
+    report = check_citations("Yes. Hypomagnesemia has been reported [1].", SOURCES, QUESTION)
+
+    assert report.ok and len(report.checks) == 1

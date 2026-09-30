@@ -5,7 +5,9 @@ counted needs no judge model:
 
   negatives    refused by the guardrail, refused by the model, or answered
                (the failure that matters: a confident answer with no source)
-  answerable   answered, or wrongly refused, and by whom
+  answerable   answered, or refused, and by whom. A model that refuses when the
+               gold answer is not in its five sources is right to; the refusals
+               that count against it are those with the answer in front of it
   of answers   citation check passed; sentences uncited, citing a source that
                does not exist, or unsupported by what they cite
   grounded     the answer cites at least one chunk that holds the gold answer.
@@ -32,6 +34,11 @@ Usage:
 
 One file per backend: a file holds one backend's answers, and the run refuses
 to add another backend's answers to it.
+
+--recheck scores the saved answers again with the current citation check and
+rewrites the file, calling no model. It exists because the check itself can be
+wrong: it first counted gpt-oss's citations as missing, since that model writes
+them in its own style.
 """
 from __future__ import annotations
 
@@ -41,6 +48,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 
+from rag.generate.prompt import Source, check_citations, normalise_citations
 from rag.index.bm25_text import TOKEN, tokenize
 
 STATES_GOLD = 0.5       # share of the gold span's weighted words an answer must contain
@@ -78,6 +86,9 @@ def summarise(records: Sequence[Mapping], relevant: Mapping[str, Iterable[str]],
         refused = record["refused_by"]
         out[f"{kind} {'refused by ' + refused if refused else 'answered'}"] += 1
         if refused:
+            if refused == "model" and not negative:
+                out["model refusals with the answer in its sources"] += bool(
+                    set(relevant[record["qid"]]) & set(record["sources"]))
             continue
         out["answers"] += 1
         out["answers citation check ok"] += record["citations_ok"]
@@ -95,6 +106,28 @@ def summarise(records: Sequence[Mapping], relevant: Mapping[str, Iterable[str]],
     return dict(out)
 
 
+def sentence_rows(report, min_support: float) -> list[dict]:
+    return [{"text": c.sentence, "cited": list(c.cited), "valid": c.valid,
+             "support": round(c.support, 3), "supported": c.support >= min_support}
+            for c in (report.checks if report else ())]
+
+
+def recheck(record: Mapping, texts: Mapping, min_support: float,
+            stem: Callable[[str], str] | None = None,
+            weight: Callable[[str], float] | None = None) -> dict:
+    """A saved answer scored again with the current citation check. texts maps
+    its source chunk ids to what the model read. A guardrail refusal has no
+    answer to check and comes back unchanged."""
+    if record["refused_by"] == "guardrail":
+        return dict(record)
+    answer = normalise_citations(record["answer"])
+    sources = [Source(chunk_id, texts[chunk_id]) for chunk_id in record["sources"]]
+    report = check_citations(answer, sources, record["question"], stem, weight)
+    return {**record, "answer": answer, "refused_by": "model" if report.refused else None,
+            "citations_ok": bool(report.ok and not report.refused),
+            "sentences": sentence_rows(report, min_support)}
+
+
 def to_record(qid: str, answer, min_support: float) -> dict:
     report = answer.report
     return {
@@ -104,9 +137,7 @@ def to_record(qid: str, answer, min_support: float) -> dict:
         "answer": answer.text,
         "sources": [source.chunk_id for source in answer.sources],
         "citations_ok": bool(report and report.ok and not report.refused),
-        "sentences": [{"text": c.sentence, "cited": list(c.cited), "valid": c.valid,
-                       "support": round(c.support, 3), "supported": c.support >= min_support}
-                      for c in (report.checks if report else ())],
+        "sentences": sentence_rows(report, min_support),
         "seconds": round(answer.seconds, 1),
         "backend": answer.generation.backend if answer.generation else None,
         "prompt_tokens": answer.generation.prompt_tokens if answer.generation else 0,
@@ -129,6 +160,8 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=0, help="only the first N questions")
     parser.add_argument("--backend", choices=("ollama", "groq"), default="ollama",
                         help="ollama: the local model; groq: the hosted one, needs GROQ_API_KEY in .env")
+    parser.add_argument("--recheck", action="store_true",
+                        help="score the saved answers again with the current citation check; no model is called")
     args = parser.parse_args()
 
     questions = load_gold(split="dev")
@@ -143,6 +176,17 @@ def main() -> None:
     print(f"{len(questions)} dev questions, {len(done)} already answered in {args.out.name}, {len(todo)} to go")
 
     loaded: dict = {}
+    if args.recheck and done:
+        sparse = load_retriever("bm25", {}, loaded)
+        texts = ChunkTexts()
+        texts.fetch(sorted({chunk_id for row in done.values() for chunk_id in row["sources"]}))
+        done = {qid: recheck(row, texts, MIN_SUPPORT, sparse.stem, idf_weight(sparse))
+                for qid, row in done.items()}
+        scratch = args.out.with_suffix(".tmp")
+        with open(scratch, "w", encoding="utf-8") as fh:
+            fh.writelines(json.dumps(row, ensure_ascii=False) + chr(10) for row in done.values())
+        scratch.replace(args.out)
+        print(f"rechecked {len(done)} saved answers, rewrote {args.out.name}")
     if todo:
         backend = make_backend(args.backend)
         others = {row["backend"] for row in done.values() if row["backend"]} - {backend.name}
@@ -180,7 +224,9 @@ def main() -> None:
     line("negatives ANSWERED", "negative answered", "negative")
     line("answerable answered", "answerable answered", "answerable")
     line("answerable wrongly refused by the guardrail", "answerable refused by guardrail", "answerable")
-    line("answerable wrongly refused by the model", "answerable refused by model", "answerable")
+    line("answerable refused by the model", "answerable refused by model", "answerable")
+    line("  of those, with the gold answer in the top 5", "model refusals with the answer in its sources",
+         "answerable refused by model")
     line("answers passing the citation check", "answers citation check ok", "answers")
     line("sentences with no citation", "sentences uncited", "sentences")
     line("sentences citing a source that does not exist", "sentences invalid", "sentences")

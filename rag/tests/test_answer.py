@@ -151,3 +151,42 @@ def test_summarise_counts_answers_that_state_the_gold_answer():
     counts = summarise([record("a1"), record("a2")], relevant, stated=["a2"])
 
     assert counts["answerable stating the gold answer"] == 1
+
+
+def test_recheck_scores_a_saved_answer_again_without_a_model():
+    """A saved answer whose citations were in the model's own style, U+3010 1
+    U+2020 L1-L4 U+3011, was stored as uncited. Rechecked, it is cited, valid,
+    supported, and rewritten with [1]."""
+    from rag.eval.answer_eval import recheck
+
+    saved = {"qid": "d078", "question": QUESTION, "refused_by": None, "sources": ["c1", "c2"],
+             "answer": "Hypomagnesemia has been reported\u30101\u2020L1-L4\u3011.",
+             "citations_ok": False, "sentences": [{"cited": [], "valid": True, "supported": False}]}
+
+    row = recheck(saved, TEXTS, MIN_SUPPORT)
+
+    assert row["answer"] == "Hypomagnesemia has been reported[1]."
+    assert row["citations_ok"] and row["sentences"][0]["cited"] == [1]
+    assert row["qid"] == "d078" and row["refused_by"] is None
+
+
+def test_recheck_leaves_a_guardrail_refusal_alone_and_spots_a_model_refusal():
+    from rag.eval.answer_eval import recheck
+
+    guarded = {"qid": "n1", "question": "q", "refused_by": "guardrail", "sources": [], "answer": "No label..."}
+    refused = {"qid": "a1", "question": QUESTION, "refused_by": None, "sources": ["c1"],
+               "answer": REFUSAL, "citations_ok": False, "sentences": []}
+
+    assert recheck(guarded, TEXTS, MIN_SUPPORT) == guarded
+    assert recheck(refused, TEXTS, MIN_SUPPORT)["refused_by"] == "model"
+
+
+def test_a_model_refusal_is_a_mistake_only_with_the_answer_in_its_sources():
+    relevant = {"a1": {"c1"}, "a2": {"c9"}}
+    records = [record("a1", refused_by="model"),      # the gold chunk c1 was in its sources
+               record("a2", refused_by="model")]      # c9 was not retrieved: refusing is right
+
+    counts = summarise(records, relevant)
+
+    assert counts["answerable refused by model"] == 2
+    assert counts["model refusals with the answer in its sources"] == 1

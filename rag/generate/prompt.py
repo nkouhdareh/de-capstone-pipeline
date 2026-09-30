@@ -25,6 +25,12 @@ citing [1] for something [1] never says. Pure Python, so CI runs its tests.
 A small model does not always refuse with the exact sentence alone: it may add
 a remark before it. An answer containing the refusal sentence anywhere is a
 refusal.
+
+A model may also cite in its own style. gpt-oss writes full-width brackets with
+a line range after a dagger, as in its training: U+3010 1 U+2020 L1-L4 U+3011.
+The first full run on Groq counted 55 of 71 such sentences as uncited before
+this was seen. normalise_citations() rewrites them as [1], for the check and
+for the reader.
 """
 from __future__ import annotations
 
@@ -45,6 +51,8 @@ FILLER = frozenset({
     "have", "had", "from", "include", "includes", "including",
 })
 CITATION = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
+# Full-width brackets around a number, with an optional dagger and line range.
+FOREIGN_CITATION = re.compile("\u3010\\s*(\\d+)(?:\u2020[^\u3011]*)?\u3011")
 SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9])")
 
 SYSTEM = (
@@ -70,6 +78,11 @@ def build_prompt(question: str, sources: Sequence[Source]) -> tuple[str, str]:
             "Answer using only the sources above, with a citation after every sentence. "
             f"If they do not contain the answer, reply only: {REFUSAL}")
     return SYSTEM, user
+
+
+def normalise_citations(text: str) -> str:
+    """Citations in a model's own style rewritten as [n]; everything else untouched."""
+    return FOREIGN_CITATION.sub(lambda match: f"[{match.group(1)}]", text)
 
 
 def cited_numbers(sentence: str) -> list[int]:
@@ -121,6 +134,7 @@ def check_citations(answer: str, sources: Sequence[Source], question: str = "",
     word counts the same."""
     if REFUSAL in answer:
         return CitationReport(True, ())
+    answer = normalise_citations(answer)
     stem = stem or (lambda word: word)
     weight = weight or (lambda word: 1.0)
     source_words = [{stem(word) for word in TOKEN.findall(source.text.lower())} for source in sources]
@@ -130,6 +144,8 @@ def check_citations(answer: str, sources: Sequence[Source], question: str = "",
         cited = tuple(cited_numbers(sentence))
         valid = all(1 <= number <= len(sources) for number in cited)
         words = [word for word in (stem(w) for w in content_words(sentence)) if word not in asked]
+        if not cited and not words:
+            continue            # "Yes." says nothing a source could back, so it needs no citation
         support = 0.0
         if cited and valid:
             pool = set().union(*(source_words[number - 1] for number in cited))
