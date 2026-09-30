@@ -26,9 +26,10 @@ otherwise, and each names the date the decision was actually taken.
 Numbers 003, 005, 006, 007, 008 and 009 were **reserved** in `architecture.md` on
 2026-08-02 before they were written. Each reserved number kept its original meaning, so
 that references written against it elsewhere in the repository stay valid. Numbers 006 and
-008 were reserved for component choices inside the retrieval extension; that extension was
-never built, so the decisions were never taken and the numbers stay unused —
-[ADR-015](ADR-015-retrieval-extension-not-built.md) supersedes them.
+008 were reserved for component choices inside the retrieval extension. That extension was
+not built by the capstone deadline, so the decisions were not taken then and the numbers
+stay unused: [ADR-015](ADR-015-retrieval-extension-not-built.md) supersedes them. When the
+extension was built in September 2026, its decisions took new numbers, 016 and 017.
 
 ## Index
 
@@ -49,7 +50,9 @@ never built, so the decisions were never taken and the numbers stay unused —
 | [012](ADR-012-snowflake-key-pair-service-identity.md) | Key-pair authentication with a `TYPE = SERVICE` identity | Accepted | 2026-08-13 |
 | [013](ADR-013-separate-ci-identity.md) | A separate Snowflake identity for CI | Accepted | 2026-08-17 |
 | [014](ADR-014-terraform-ci-role-only.md) | Terraform scoped to the CI IAM role only | Accepted | 2026-08-17 |
-| [015](ADR-015-retrieval-extension-not-built.md) | The retrieval (RAG) extension was not built | Accepted | 2026-08-18 |
+| [015](ADR-015-retrieval-extension-not-built.md) | The retrieval (RAG) extension was not built by the deadline | Accepted; built later, see 016 and 017 | 2026-08-18 |
+| [016](ADR-016-no-vector-store-exact-search.md) | No separate vector store; exact search in process | Accepted | 2026-09-28 |
+| [017](ADR-017-hosted-generation-local-fallback.md) | A hosted model answers by default; a local model stays behind the same interface | Accepted | 2026-09-30 |
 
 ## Where the reasoning came from
 

@@ -555,8 +555,9 @@ as decisions.
 - **No streaming.** FAERS has no real-time feed ([ADR-007](docs/adr/ADR-007-no-streaming-layer.md)).
 - **No fuzzy drug matching.** Unbounded effort on the riskiest component, and actively
   dangerous given drug nomenclature ([ADR-005](docs/adr/ADR-005-drug-name-resolution-tiers.md)).
-- **No retrieval / RAG layer over label text.** Planned as an extension with a hard stop,
-  and dropped ([ADR-015](docs/adr/ADR-015-retrieval-extension-not-built.md)).
+- **No retrieval / RAG layer at submission.** Planned as an extension with a hard stop,
+  and dropped ([ADR-015](docs/adr/ADR-015-retrieval-extension-not-built.md)). Built afterwards
+  under `rag/`, local only and outside the pipeline: see `rag/README.md`.
 - **No causality inference.** Disproportionality screens; it does not prove. This is a
   domain constraint, not a technical one.
 - **No Kubernetes.** Compose is sufficient for one developer and one machine.
@@ -583,7 +584,9 @@ as decisions.
 | Warehouse auth | Key pair, `TYPE = SERVICE` | Password; password + MFA | Key distribution to manage; no password can exist | [012](docs/adr/ADR-012-snowflake-key-pair-service-identity.md) |
 | CI identity | A separate Snowflake user | A second key on the production user | One more identity to manage; isolation becomes a privilege, not a config line | [013](docs/adr/ADR-013-separate-ci-identity.md) |
 | IaC scope | Terraform over one IAM role | Terraform over all infrastructure; none at all | Most infrastructure stays click-ops; gained a real, reviewed, drift-free IaC loop | [014](docs/adr/ADR-014-terraform-ci-role-only.md) |
-| Retrieval extension | Not built | Building it late | Lost the RAG story; protected the core pipeline's quality | [015](docs/adr/ADR-015-retrieval-extension-not-built.md) |
+| Retrieval extension | Not built by the deadline; built afterwards under `rag/` | Building it late | Lost the RAG story for the capstone; protected the core pipeline's quality | [015](docs/adr/ADR-015-retrieval-extension-not-built.md) |
+| Vector store (added later) | None: exact search in process | Qdrant; pgvector; faiss HNSW | Search time grows with the corpus; nothing to run and no recall to monitor | [016](docs/adr/ADR-016-no-vector-store-exact-search.md) |
+| Answer generation (added later) | A hosted model by default, a local model behind the same interface | Local only; hosted only | Two paths to keep working; a second per answer, and still reproducible offline | [017](docs/adr/ADR-017-hosted-generation-local-fallback.md) |
 
 ---
 
@@ -605,7 +608,9 @@ as decisions.
 | [012](docs/adr/ADR-012-snowflake-key-pair-service-identity.md) | Key-pair auth with a `TYPE = SERVICE` identity | Accepted |
 | [013](docs/adr/ADR-013-separate-ci-identity.md) | A separate Snowflake identity for CI | Accepted |
 | [014](docs/adr/ADR-014-terraform-ci-role-only.md) | Terraform scoped to the CI IAM role only | Accepted |
-| [015](docs/adr/ADR-015-retrieval-extension-not-built.md) | The retrieval extension was not built | Accepted |
+| [015](docs/adr/ADR-015-retrieval-extension-not-built.md) | The retrieval extension was not built by the deadline | Accepted; built later, see 016 and 017 |
+| [016](docs/adr/ADR-016-no-vector-store-exact-search.md) | No separate vector store; exact search in process | Accepted |
+| [017](docs/adr/ADR-017-hosted-generation-local-fallback.md) | A hosted model answers by default; a local model stays behind the same interface | Accepted |
 
 ---
 
@@ -625,7 +630,7 @@ an ADR or acknowledged as a gap.
 | TR-39 | Schema-drift detection | Not implemented | Gap |
 | TR-40/41/42 | Structured JSON logs, `pipeline_run_log` table, per-run cost | Airflow task logs; per-month metrics in Parquet; `publish_metrics` macro | Partial. The auditable record exists; the structured form does not |
 | TR-44 | `dbt docs generate` on every CI run | Manual only | Gap |
-| TR-50…57 | Retrieval extension | Not built | [ADR-015](docs/adr/ADR-015-retrieval-extension-not-built.md) |
+| TR-50…57 | Retrieval extension | Built after submission under `rag/`, with changes; TR-53 measured and not built | [ADR-016](docs/adr/ADR-016-no-vector-store-exact-search.md), [ADR-017](docs/adr/ADR-017-hosted-generation-local-fallback.md) |
 | TR-60 | Freshness ≤ 24 h | Not applicable | Frozen historical snapshot, no scheduled run |
 | TR-62 | Total cost < $10 | $0.25 paid, plus $42 of trial credit consumed | Under the letter; stated in full rather than hidden |
 | TR-63 | Cold start in one command, < 15 min | Not achieved | Three stacks, three venvs, two cloud accounts. Setup is documented honestly in the README instead |

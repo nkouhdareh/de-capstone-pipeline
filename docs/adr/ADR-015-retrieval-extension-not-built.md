@@ -2,9 +2,19 @@
 
 | | |
 |---|---|
-| **Status** | Accepted — supersedes the reserved ADR-006 and ADR-008 |
+| **Status** | Accepted for the capstone deadline; supersedes the reserved ADR-006 and ADR-008. The extension was built afterwards: see the update below |
 | **Date** | 2026-08-18 |
 | **Deciders** | Nastaran Kouhdareh |
+
+> **Update, 2026-09-30.** This record stands as the decision taken on 18 August 2026 and is
+> not rewritten. The extension was built after submission, in September 2026, as a portfolio
+> piece under `rag/`. Its two component decisions are
+> [ADR-016](ADR-016-no-vector-store-exact-search.md) (no separate vector store) and
+> [ADR-017](ADR-017-hosted-generation-local-fallback.md) (generation backend). ADR-006 and
+> ADR-008 stay unused, as decided below. Two things in "Revisit if" did not survive
+> measurement: one chunk per label section fails for the long sections, and the pre-filter on
+> `drug_key` was not built ([ADR-005](ADR-005-drug-name-resolution-tiers.md) explains why
+> `drug_key` is kept out of the index). The part that held: the evaluation set was built first.
 
 ## Context
 

@@ -8,6 +8,7 @@
 | **Version** | **1.0 — final, reconciled against what was built** |
 | **Originally drafted** | 3 August 2026 (v0.1, Gate 2) |
 | **This revision** | 19 August 2026 |
+| **Retrieval update** | 30 September 2026: the retrieval rows in §1, §10, §14 and §16 only, after the extension was built |
 | **Depends on** | `business_requirements.md` v1.0 (Gate 1) |
 
 > **What changed from v0.1.** Every TR keeps its original number — they are the grading
@@ -36,9 +37,9 @@
 | IaC | Terraform, **scoped to the CI IAM role only** | Marked "optional, first item to cut" in v0.1; delivered, deliberately narrow | ✅ — [ADR-014](adr/ADR-014-terraform-ci-role-only.md) |
 | Data quality | dbt tests + `pytest` | dbt for data assertions, pytest for logic | ✅ — 42 dbt tests, 21 pytest |
 | Dashboard | Streamlit — local ×2 plus **hosted inside Snowflake** | The hosted version makes the demo a URL with no laptop dependency | ✅ — exceeded v0.1 |
-| Vector store | Postgres + `pgvector` | — | ❌ **Not built** — [ADR-015](adr/ADR-015-retrieval-extension-not-built.md) |
-| Embeddings | `sentence-transformers` / `all-MiniLM-L6-v2` | — | ❌ **Not built** |
-| Generation | Ollama / `llama3.1:8b` | — | ❌ **Not built** |
+| Vector store | None: exact search over one numpy file (v0.1 named Postgres + `pgvector`) | 19 ms over 360,916 vectors, and always exact | ⚠️ built after submission: [ADR-016](adr/ADR-016-no-vector-store-exact-search.md) |
+| Embeddings | `Snowflake/snowflake-arctic-embed-s`, ONNX through `fastembed` (v0.1 named `all-MiniLM-L6-v2`) | A 512-token window against 256, and it runs on a CPU | ⚠️ built after submission |
+| Generation | Groq `openai/gpt-oss-120b` by default; Ollama `llama3.2:3b` behind the same interface (v0.1 named Ollama `llama3.1:8b`) | About a second per answer against a minute on this CPU | ⚠️ built after submission: [ADR-017](adr/ADR-017-hosted-generation-local-fallback.md) |
 
 **Rejected, and still rejected:** Kafka (no real-time source — [ADR-007](adr/ADR-007-no-streaming-layer.md)),
 Elasticsearch/Qdrant (extension never built), Databricks/Fabric (no credits),
@@ -308,20 +309,23 @@ banded rather than stored exactly, as a defensive measure.
 
 | ID | Requirement | Status |
 |---|---|---|
-| TR-50 | Label documents chunked by SPL section, one chunk per section | ❌ |
-| TR-51 | Chunks embedded with `all-MiniLM-L6-v2` (384 dimensions) | ❌ |
-| TR-52 | Embeddings stored in Postgres `vector(384)` with an HNSW cosine index | ❌ |
-| TR-53 | Retrieval pre-filters on structured metadata before similarity ranking | ❌ |
-| TR-54 | Every answer cites the source label id and section | ❌ |
-| TR-55 | Below a similarity threshold, return "outside indexed scope" and do not generate | ❌ |
-| TR-56 | A gold set of ≥ 30 question/chunk pairs committed; recall@5 measured and published | ❌ |
-| TR-57 | Index scope configurable, not hard-coded | ❌ |
+| TR-50 | Label documents chunked by SPL section, one chunk per section | ⚠️ Changed. The section is the boundary, but one chunk per section failed: `use_in_specific_populations` overflows a 512-token window 94.6% of the time. Long sections are split and six short OTC sections are merged: 360,916 chunks after deduplication |
+| TR-51 | Chunks embedded with `all-MiniLM-L6-v2` (384 dimensions) | ⚠️ Changed. `Snowflake/snowflake-arctic-embed-s` (384 dimensions, 512-token window). MiniLM was kept as the baseline to beat; that comparison was not run |
+| TR-52 | Embeddings stored in Postgres `vector(384)` with an HNSW cosine index | ⚠️ Changed. No store: exact search over one numpy file, 19 ms. [ADR-016](adr/ADR-016-no-vector-store-exact-search.md) |
+| TR-53 | Retrieval pre-filters on structured metadata before similarity ranking | ❌ Measured, not built. A perfect drug filter adds +0.044 [-0.015, +0.118] at recall@5 on dev: too little for the risk of hiding the right drug |
+| TR-54 | Every answer cites the source label id and section | ⚠️ Every sentence cites a numbered source, shown with its drug name and section, and code checks each citation against the cited text. The label `set_id` is stored with every chunk but not shown in the tab |
+| TR-55 | Below a similarity threshold, return "outside indexed scope" and do not generate | ✅ Refuses before generating when a question word is in no chunk or the best cosine is below 0.72. Test split: 9 of 10 negatives refused, 2 of 46 answerable questions wrongly refused |
+| TR-56 | A gold set of ≥ 30 question/chunk pairs committed; recall@5 measured and published | ✅ 139 hand-checked questions in `rag/eval/gold/gold.jsonl`, split dev and test. Test split, opened once: recall@5 0.609 [0.457, 0.739], against 0.500 for dense search alone |
+| TR-57 | Index scope configurable, not hard-coded | ⚠️ Partly. The section allowlist is one named constant in `rag/corpus/chunker.py` and each index is a named folder chosen by a flag; there is no configuration file |
 
-**None built. The hard stop was honoured.** The label corpus (261,258 records) is ingested
-and sits in Bronze, so the work remains startable rather than hypothetical. TR-56 was the
-requirement that made this worth doing, and building the rest without it would have produced
-a demo rather than engineering — which is why a partial build was rejected rather than
-attempted. Full reasoning: [ADR-015](adr/ADR-015-retrieval-extension-not-built.md).
+**Built after submission, in September 2026, under `rag/`.** The hard stop of 18 August was
+honoured ([ADR-015](adr/ADR-015-retrieval-extension-not-built.md)); the work was
+resumed afterwards as a portfolio piece and measured before it was called done. Two requirements
+are met, five are met with a change that measurement forced, and one (TR-53) was measured and
+deliberately not built. The two component decisions are [ADR-016](adr/ADR-016-no-vector-store-exact-search.md)
+and [ADR-017](adr/ADR-017-hosted-generation-local-fallback.md). Every figure, and the
+command that reproduces it, is in `rag/README.md`. The test split was scored once, on
+30 September 2026, and nothing was tuned afterwards.
 
 ---
 
@@ -409,9 +413,10 @@ de-capstone/
 > **Differences from v0.1 §12**, all consequences of decisions recorded elsewhere: DAGs
 > live under `airflow/` (three-stack design, [ADR-010](adr/ADR-010-airflow-triggers-containers.md));
 > the dbt project is `de_capstone/` at the root, not `dbt/`; there is no `ingestion/` package —
-> the four ingestion scripts sit in `scripts/` alongside the Spark job; there is no `rag/`
-> directory ([ADR-015](adr/ADR-015-retrieval-extension-not-built.md)); and the dashboard is
-> three files rather than one `streamlit_app.py`.
+> the four ingestion scripts sit in `scripts/` alongside the Spark job; `rag/` did not exist
+> at submission ([ADR-015](adr/ADR-015-retrieval-extension-not-built.md)) and was added in
+> September 2026 (see `rag/README.md`); and the dashboard is three files rather than one
+> `streamlit_app.py`.
 
 ---
 
@@ -445,7 +450,7 @@ de-capstone/
 | BR-08, BR-09 (incremental, backfill) | TR-02, TR-03, TR-26, TR-29, TR-30 | ⚠️ BR-08 not met; backfill ✅ |
 | BR-10 … BR-14 (metrics, semantic layer) | TR-20 … TR-25, TR-38 | ✅ |
 | BR-15 (UI) | TR-43, TR-61 | ✅ |
-| BR-16, BR-17 (retrieval) | TR-50 … TR-57 | ❌ Not built |
+| BR-16, BR-17 (retrieval) | TR-50 … TR-57 | ⚠️ Built after submission; TR-53 not built |
 | BR-18 … BR-20 (orchestration, resilience) | TR-26 … TR-32, TR-39 | ⚠️ No schedule; no drift detection |
 | BR-21, BR-22 (logging, lineage) | TR-40 … TR-44 | ⚠️ Lineage ✅; structured logging ❌ |
 | BR-23 (secrets) | TR-45 … TR-48 | ✅ Exceeded |
@@ -501,7 +506,7 @@ de-capstone/
 | **TR-42** | **No per-run cost recording** | §8 — gap |
 | **TR-44** | **No `dbt docs generate` in CI** | §8 — gap |
 | TR-49 | AWS Budget alert **unverifiable** | §9 |
-| **TR-50 … TR-57** | **Retrieval extension not built** | [ADR-015](adr/ADR-015-retrieval-extension-not-built.md) |
+| TR-50 … TR-57 | Built after submission, with changes; TR-53 measured and not built | §10 |
 | TR-58, TR-60 | Not applicable — no scheduled run, frozen snapshot | §11 |
 | TR-62 | $0.25 paid **plus $42 of trial credit** | §11 |
 | **TR-63** | **Cold start is not one command** | §11 |
