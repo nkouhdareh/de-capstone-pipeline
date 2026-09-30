@@ -174,3 +174,17 @@ def make_backend(name: str) -> Backend:
     if name == "groq":
         return GroqBackend()
     raise ValueError(f"unknown backend {name!r}")
+
+
+class LazyBackend:
+    """Builds the real backend the first time an answer is generated. A question
+    the guardrail refuses never reaches a model, so it should need neither a key
+    nor a running server."""
+
+    def __init__(self, name: str):
+        self.name, self.real = name, None
+
+    def generate(self, system: str, user: str) -> Generation:
+        if self.real is None:
+            self.real = make_backend(self.name)
+        return self.real.generate(system, user)

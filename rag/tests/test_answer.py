@@ -190,3 +190,28 @@ def test_a_model_refusal_is_a_mistake_only_with_the_answer_in_its_sources():
 
     assert counts["answerable refused by model"] == 2
     assert counts["model refusals with the answer in its sources"] == 1
+
+
+def test_source_parts_splits_names_section_and_text():
+    from rag.generate.answer import source_parts
+    from rag.generate.prompt import Source
+
+    source = Source("c1", "PANTOPRAZOLE (brand PROTONIX)\nWarnings And Cautions\nLine one.\nLine two.")
+
+    assert source_parts(source) == ("PANTOPRAZOLE (brand PROTONIX)", "Warnings And Cautions", "Line one.\nLine two.")
+
+
+def test_problems_names_what_is_wrong_with_each_flagged_sentence():
+    from rag.generate.answer import problems
+    from rag.generate.prompt import Source, check_citations
+
+    sources = [Source("c1", TEXTS["c1"])]
+    report = check_citations("Hypomagnesemia has been reported [1]. Kidney failure is common. "
+                             "Alopecia occurs [4]. Seizures and rash follow [1].", sources, QUESTION)
+
+    found = problems(report)
+
+    assert [reason for _, reason in found] == [
+        "no source is cited", "it cites a source number that does not exist",
+        "its words are mostly not in the sources it cites"]
+    assert problems(None) == [] and problems(check_citations("Hypomagnesemia has been reported [1].", sources)) == []

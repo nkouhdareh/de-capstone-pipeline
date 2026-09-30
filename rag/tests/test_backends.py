@@ -136,3 +136,20 @@ def test_every_request_names_its_own_user_agent(monkeypatch):
 
     assert backends.post_json("https://example.invalid", {}) == {"ok": True}
     assert seen["agent"] == backends.USER_AGENT
+
+
+def test_a_lazy_backend_is_built_only_when_an_answer_is_generated(monkeypatch):
+    """A question the guardrail refuses must not need a key or a server."""
+    built = []
+
+    class Real:
+        def generate(self, system, user):
+            return backends.Generation("An answer [1].", 0.1, 10, 5, "real")
+
+    monkeypatch.setattr(backends, "make_backend", lambda name: built.append(name) or Real())
+    lazy = backends.LazyBackend("groq")
+
+    assert built == []
+    assert lazy.generate("system", "user").text == "An answer [1]."
+    lazy.generate("system", "user")
+    assert built == ["groq"]

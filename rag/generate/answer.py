@@ -23,6 +23,7 @@ from typing import NamedTuple
 
 from rag.generate.backends import Backend, Generation
 from rag.generate.prompt import (
+    MIN_SUPPORT,
     CitationReport,
     Source,
     build_prompt,
@@ -50,6 +51,28 @@ def refusal_text(verdict: Verdict) -> str:
         return ("No label in the index contains: " + ", ".join(verdict.unknown_words)
                 + ". This question cannot be answered from the indexed labels.")
     return "Nothing in the indexed labels is close enough to this question to answer it."
+
+
+def source_parts(source: Source) -> tuple[str, str, str]:
+    """(drug names, section title, chunk text) of a source, for showing it.
+    Source.text is those three, one after the other, as bm25_text() builds it."""
+    names, _, rest = source.text.partition(chr(10))
+    section, _, body = rest.partition(chr(10))
+    return names, section, body
+
+
+def problems(report: CitationReport | None) -> list[tuple[str, str]]:
+    """(sentence, what is wrong with its citation) for every sentence the check
+    flags, in plain words for a reader. Empty when the answer passes."""
+    found = []
+    for check in report.checks if report else ():
+        if not check.cited:
+            found.append((check.sentence, "no source is cited"))
+        elif not check.valid:
+            found.append((check.sentence, "it cites a source number that does not exist"))
+        elif check.support < MIN_SUPPORT:
+            found.append((check.sentence, "its words are mostly not in the sources it cites"))
+    return found
 
 
 def idf_weight(sparse) -> Callable[[str], float]:

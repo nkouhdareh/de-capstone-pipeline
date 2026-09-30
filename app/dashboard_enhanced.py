@@ -21,6 +21,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
+import rag_tab
 from db import connect
 
 
@@ -675,11 +676,12 @@ else:
 # Tabs
 # ---------------------------------------------------------------------
 
-tab_overview, tab_explorer, tab_profile, tab_quality = st.tabs([
+tab_overview, tab_explorer, tab_profile, tab_quality, tab_ask = st.tabs([
     "Overview",
     "Signal Explorer",
     "Drug Profile",
     "Data Quality & Methodology",
+    "Ask the labels",
 ])
 
 
@@ -1015,6 +1017,10 @@ st.caption(
     "rows) → **S3** → **Snowflake RAW** → **dbt** (10 models, "
     "star schema, PRR/ROR signals) → **Airflow** (one trigger, 8 tasks)"
 )
+
+with tab_ask:
+    rag_tab.render()
+
 
 st.caption(
     f"Models last built {built_at_text} · dbt invocation `{run_id}` "
