@@ -15,11 +15,16 @@ every sentence of the answer it asks:
 "Supported" looks only at what the sentence adds: its content words, minus
 stopwords, minus filler such as "label" or "states", minus the citation markers,
 minus every word already in the question (a drug name or "magnesium" is in the
-question and in every source, so it proves nothing). At least MIN_SUPPORT of
-those words, stemmed on both sides, must appear in the chunks the sentence
-cites. It cannot prove a claim true, but it catches the dangerous failure: a
-sentence citing [1] for something [1] never says. Pure Python, so CI runs its
-tests.
+question and in every source, so it proves nothing). Each remaining word counts
+by its weight, which the caller passes in: BM25's idf, so a rare word such as
+"alopecia" counts for much more than "patients". At least MIN_SUPPORT of that
+weight, stemmed on both sides, must be found in the chunks the sentence cites.
+It cannot prove a claim true, but it catches the dangerous failure: a sentence
+citing [1] for something [1] never says. Pure Python, so CI runs its tests.
+
+A small model does not always refuse with the exact sentence alone: it may add
+a remark before it. An answer containing the refusal sentence anywhere is a
+refusal.
 """
 from __future__ import annotations
 
@@ -30,7 +35,7 @@ from typing import NamedTuple
 from rag.index.bm25_text import TOKEN, tokenize
 
 REFUSAL = "The retrieved label sections do not answer this question."
-MIN_SUPPORT = 0.8
+MIN_SUPPORT = 0.5
 # Words an answer uses to talk about the sources, which the sources never say.
 FILLER = frozenset({
     "label", "labels", "section", "sections", "source", "sources", "state", "states",
@@ -46,7 +51,8 @@ SYSTEM = (
     "You answer questions about US drug labels using only the numbered sources you are given. "
     "After every sentence, cite the sources it comes from, like [1] or [2][3]. "
     "Do not use anything you know that the sources do not say. "
-    f"If the sources do not answer the question, reply exactly: {REFUSAL} "
+    "If the sources do not contain the answer, do not explain what they do contain: "
+    f"reply with exactly this one sentence and nothing else: {REFUSAL} "
     "Keep the answer to at most four sentences."
 )
 
@@ -61,7 +67,8 @@ def build_prompt(question: str, sources: Sequence[Source]) -> tuple[str, str]:
     blocks = "\n\n".join(f"[{number}] {source.text}" for number, source in enumerate(sources, start=1))
     user = (f"Sources:\n\n{blocks}\n\n"
             f"Question: {question}\n"
-            "Answer using only the sources above, with a citation after every sentence.")
+            "Answer using only the sources above, with a citation after every sentence. "
+            f"If they do not contain the answer, reply only: {REFUSAL}")
     return SYSTEM, user
 
 
@@ -108,10 +115,14 @@ class CitationReport(NamedTuple):
 
 
 def check_citations(answer: str, sources: Sequence[Source], question: str = "",
-                    stem: Callable[[str], str] | None = None) -> CitationReport:
-    if answer.strip().startswith(REFUSAL):
+                    stem: Callable[[str], str] | None = None,
+                    weight: Callable[[str], float] | None = None) -> CitationReport:
+    """weight gives a stemmed word's importance (BM25's idf); without it every
+    word counts the same."""
+    if REFUSAL in answer:
         return CitationReport(True, ())
     stem = stem or (lambda word: word)
+    weight = weight or (lambda word: 1.0)
     source_words = [{stem(word) for word in TOKEN.findall(source.text.lower())} for source in sources]
     asked = {stem(word) for word in TOKEN.findall(question.lower())}
     checks = []
@@ -122,7 +133,8 @@ def check_citations(answer: str, sources: Sequence[Source], question: str = "",
         support = 0.0
         if cited and valid:
             pool = set().union(*(source_words[number - 1] for number in cited))
+            total = sum(weight(word) for word in words)
             # A sentence with nothing to check, such as "Yes [1].", is not held against it.
-            support = sum(word in pool for word in words) / len(words) if words else 1.0
+            support = sum(weight(word) for word in words if word in pool) / total if total else 1.0
         checks.append(SentenceCheck(sentence, cited, valid, support))
     return CitationReport(False, tuple(checks))

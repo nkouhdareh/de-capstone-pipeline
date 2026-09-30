@@ -69,3 +69,24 @@ def test_words_from_the_question_prove_nothing():
     report = check_citations("Pantoprazole magnesium causes kidney failure [1].", SOURCES, QUESTION)
 
     assert report.unsupported == 1
+
+
+def test_the_refusal_sentence_anywhere_in_the_answer_is_a_refusal():
+    """A small model often adds a remark before the sentence it was told to use."""
+    report = check_citations(f"Joint pain is not mentioned [1].\n\n{REFUSAL}", SOURCES, QUESTION)
+
+    assert report.refused and report.ok
+
+
+def test_a_rare_unsupported_word_outweighs_common_supported_ones():
+    """'before', 'treatment' and 'PPIs' are in [1]; 'alopecia' and 'seen' are
+    not. Counted equally, 3 of 5 words are found (0.6, a pass); weighted by
+    rarity, the one that matters decides (2 of 10, flagged)."""
+    answer = "Alopecia is seen before treatment with PPIs [1]."
+    weights = {"alopecia": 8.0, "seen": 0.0, "before": 0.0, "treatment": 1.0, "ppis": 1.0}
+
+    plain = check_citations(answer, SOURCES, QUESTION)
+    weighted = check_citations(answer, SOURCES, QUESTION, weight=lambda word: weights.get(word, 1.0))
+
+    assert plain.checks[0].support > 0.5
+    assert weighted.checks[0].support == 0.2 and weighted.unsupported == 1
