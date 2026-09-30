@@ -17,9 +17,9 @@ built in [ADR-015](../docs/adr/ADR-015-retrieval-extension-not-built.md).
 | 3 Dense retrieval baseline | **done** |
 | 4 Hybrid retrieval, vector store decision (ADR-016) | **done** |
 | 5 Reranking, diversity, guardrail | **done** |
-| 6 Generation and Streamlit tab (ADR-017) | not started |
+| 6 Generation and Streamlit tab (ADR-017) | **done** |
 
-Nothing here is wired into the dashboard yet.
+The dashboard's fifth tab, **Ask the labels**, puts it on screen (`app/rag_tab.py`), locally.
 
 ## What Phase 0 measured
 
@@ -187,6 +187,48 @@ did not help.
   0.72. On dev it refuses **14 of 15 negatives** and wrongly refuses 2 of 68 answerable
   questions. The reranker's score separated worse (AUC 0.86 against cosine's 0.93). The cut was
   set on dev; the test split judges it once, at the end.
+
+### Phase 6 result
+
+A language model now writes the answer from the five retrieved chunks, with a citation after
+every sentence, and the dashboard has a tab to ask it: **Ask the labels**.
+
+Two generators sit behind one small interface and were measured on the same 83 dev questions,
+with the same retrieval and prompt:
+
+| | local: `llama3.2:3b` on Ollama | hosted: `openai/gpt-oss-120b` on Groq's free plan |
+|---|---|---|
+| seconds per answer | 62 | about 1 (16 in a batch, waiting on the plan's limit) |
+| answers passing the citation check | 39 of 64 (61%) | **58 of 61 (95%)** |
+| sentences with no citation | 14 of 157 | 0 of 70 |
+| sentences not supported by what they cite | 19 of 157 | 3 of 70 |
+| refused although the answer was in its top 5 | 1 | 0 |
+| answers citing a gold chunk | 30 of 63 | 40 of 60 |
+| negatives refused | 14 of 15, all by the guardrail | 14 of 15, all by the guardrail |
+
+The hosted model answers by default; the local one keeps the project runnable with no account,
+no key and no network (ADR-017, written up in Phase 7).
+
+- **Citations are checked by code, not trusted.** For every sentence: does it cite, is the
+  number a real source, and are the words it adds found in the chunk it cites, weighted by how
+  rare each word is. No second model acts as judge.
+- **The guardrail does the refusing, not the model.** Neither model refused a single negative
+  on its own, and both answered the one that slipped past the guardrail.
+- **The check itself was wrong twice, and measuring showed it.** It passed a made-up sentence
+  until words already in the question stopped counting; and it reported 55 of 71 of the hosted
+  model's sentences as uncited, because that model writes citations in its own bracket style.
+  `answer_eval --recheck` re-scores saved answers with no model call when the check changes.
+- **The documentation was wrong once too.** The first-choice hosted model was listed by the
+  provider and not available to a free account; the account's own model list decided.
+
+The tab runs locally only: the indexes are files on this machine, and Streamlit in Snowflake
+can reach neither them nor an outside model on a trial account.
+
+    .venv-app/Scripts/python.exe -m pip install fastembed==0.8.1      # once
+    .venv-app/Scripts/streamlit.exe run app/dashboard_enhanced.py --server.port 8502 --theme.base=dark
+
+The hosted model needs `GROQ_API_KEY` in `.env` (see `.env.example`); the local one needs the
+Ollama app running with `llama3.2:3b`.
 
 ### Known limitation
 
