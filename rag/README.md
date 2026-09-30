@@ -4,7 +4,8 @@ Answers natural-language questions about drug-label content and cites the source
 label section, or states that the question falls outside indexed scope.
 
 Closes **BR-16**, **BR-17** and **TR-50 ... TR-57**, recorded as deliberately not
-built in [ADR-015](../docs/adr/ADR-015-retrieval-extension-not-built.md).
+built in [ADR-015](../docs/adr/ADR-015-retrieval-extension-not-built.md). Built afterwards, in
+September 2026; the status of each requirement is in `docs/technical_requirements.md` section 10.
 
 ## Status
 
@@ -18,8 +19,58 @@ built in [ADR-015](../docs/adr/ADR-015-retrieval-extension-not-built.md).
 | 4 Hybrid retrieval, vector store decision (ADR-016) | **done** |
 | 5 Reranking, diversity, guardrail | **done** |
 | 6 Generation and Streamlit tab (ADR-017) | **done** |
+| 7 Test split scored once, ADRs and requirements written up | **done** |
 
 The dashboard's fifth tab, **Ask the labels**, puts it on screen (`app/rag_tab.py`), locally.
+
+## Results on the held-out test split
+
+Every setting above was chosen on the 83 dev questions. The 56 test questions (46 answerable,
+10 negatives) were set aside in Phase 2 and scored **once**, on 2026-09-30, after everything was
+fixed. Nothing was tuned afterwards. These are the numbers to quote.
+
+**Retrieval**, the default pipeline against dense search alone, paired on the same questions:
+
+| 46 answerable test questions | dense | hybrid-dedup (the default) | difference, 95% paired interval |
+|---|---|---|---|
+| recall@1 | 0.283 | **0.435** | **+0.152 [+0.043, +0.261]** |
+| recall@5 | 0.500 | **0.609** | +0.109 [-0.022, +0.239] |
+| recall@10 | 0.674 | 0.630 | -0.043 [-0.196, +0.087] |
+| recall@20 | 0.739 | 0.717 | -0.022 [-0.174, +0.130] |
+| MRR@10 | 0.375 | **0.497** | **+0.122 [+0.026, +0.220]** |
+| nDCG@10 | 0.446 | 0.514 | +0.068 [-0.017, +0.154] |
+
+**The whole system**, dev beside test:
+
+| | dev (tuned on) | test (scored once) |
+|---|---|---|
+| recall@5, hybrid-dedup | 0.706 [0.588, 0.809] | **0.609 [0.457, 0.739]** |
+| negatives refused by the guardrail | 14 of 15 | **9 of 10** |
+| answerable questions wrongly refused | 2 of 68 | **2 of 46** |
+| hosted model: answers passing the citation check | 58 of 61 (95%) | **36 of 39 (92%)** |
+| local model: answers passing the citation check | 39 of 64 (61%) | **30 of 45 (67%)** |
+| negatives answered, hosted / local | 1 / 1 | **0 / 1** |
+| sentences citing a source that does not exist | 0 | **0** |
+| seconds per answer, hosted / local | about 1 / 62 | about 1 / 61 |
+
+- **Dev was flattering, as expected.** recall@5 is 0.609 on test against 0.706 on dev. The test
+  interval still contains the dev figure; this is what tuning on 83 questions costs.
+- **Hybrid-dedup clearly ranks the answer higher** (recall@1 and MRR@10 clear zero). **At the top
+  5 the gain is probable, not proven**: 7 questions better, 2 worse, and the interval touches
+  zero. Below the top 5 it is no better than dense, the known price of collapsing near-copies.
+- **The guardrail and the hosted model held** on questions they had never seen: 9 of 10 negatives
+  refused, 92% of answers passing the citation check.
+- **The test split found a bug dev did not.** On one question the local model repeated a correct
+  sentence without stopping, and the request ran into its 10-minute timeout. The local backend
+  now has the same 1,500-token cap as the hosted one. It is the only code change made after the
+  test split was opened, and it changes no answer shorter than the cap.
+
+To reproduce (the retrieval and guardrail lines take seconds; the answers need a model):
+
+    python -m rag.eval.run_eval --retriever hybrid-dedup --against dense --split test
+    python -m rag.eval.guardrail_eval --split test
+    python -m rag.eval.answer_eval --split test --backend groq --out <answers.jsonl>
+    python -m rag.eval.answer_eval --split test --out <answers.jsonl>
 
 ## What Phase 0 measured
 
@@ -156,7 +207,7 @@ and worse on 1; nDCG@10 +0.083 [+0.017, +0.150].
   gold set's own drug names, adds recall@5 +0.044 [-0.015, +0.118]: hybrid's top 5 is
   already the right drug 83.5% of the time. Detecting drugs from question text is unreliable
   (brands named "The", "Pain", "Water"), and a wrong detection hides the right answer.
-- **No separate vector store** (ADR-016, written up in Phase 7). Exact search takes 19 ms and is
+- **No separate vector store** ([ADR-016](../docs/adr/ADR-016-no-vector-store-exact-search.md)). Exact search takes 19 ms and is
   always right. faiss HNSW takes 0.4 ms but finds 0.939 of the exact top 20, and none of it
   for one question, for a saving nobody sees next to an LLM answer.
 
@@ -207,7 +258,7 @@ with the same retrieval and prompt:
 | negatives refused | 14 of 15, all by the guardrail | 14 of 15, all by the guardrail |
 
 The hosted model answers by default; the local one keeps the project runnable with no account,
-no key and no network (ADR-017, written up in Phase 7).
+no key and no network ([ADR-017](../docs/adr/ADR-017-hosted-generation-local-fallback.md)).
 
 - **Citations are checked by code, not trusted.** For every sentence: does it cite, is the
   number a real source, and are the words it adds found in the chunk it cites, weighted by how

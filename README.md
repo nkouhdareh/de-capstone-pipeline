@@ -326,10 +326,42 @@ The correct output is therefore a ranked candidate list with the supporting coun
 shown, for an expert to triage. Nothing here is a clinical or regulatory conclusion.
 
 **Also deliberately not built:** no streaming layer (FAERS has no real-time feed —
-[ADR-007](docs/adr/ADR-007-no-streaming-layer.md)), no fuzzy drug-name matching
-([ADR-005](docs/adr/ADR-005-drug-name-resolution-tiers.md)), and no retrieval/RAG layer
-over label text — planned as an extension and dropped under its own hard stop
-([ADR-015](docs/adr/ADR-015-retrieval-extension-not-built.md)).
+[ADR-007](docs/adr/ADR-007-no-streaming-layer.md)) and no fuzzy drug-name matching
+([ADR-005](docs/adr/ADR-005-drug-name-resolution-tiers.md)).
+
+**Built after the capstone:** a retrieval (RAG) layer over the drug-label text. It was planned
+as an extension, dropped under its own hard stop
+([ADR-015](docs/adr/ADR-015-retrieval-extension-not-built.md)) and built in September 2026.
+See the next section.
+
+---
+
+## Extension: ask the drug labels (RAG)
+
+Added after the capstone, in September 2026. A fifth tab in the local dashboard, **Ask the
+labels**, answers plain-language questions about drug-label text, puts a citation after every
+sentence, and refuses when the labels do not hold the answer. It is label text, not medical
+advice. Everything is in [`rag/`](rag/README.md).
+
+It searches 360,916 chunks from 86,367 drug labels two ways at once, by meaning (embeddings) and
+by keyword (BM25), fuses the two rankings and removes near-copies. The retrieval core is
+hand-written, with no LangChain and no vector database, and runs on a laptop CPU.
+
+| Measured on 56 held-out test questions, scored once | Result |
+|---|---|
+| The right label passage is among the top 5 results (recall@5) | **0.609** [0.457, 0.739]; 0.500 for embeddings alone |
+| The right passage is the first result (recall@1) | **0.435** against 0.283, paired +0.152 [+0.043, +0.261] |
+| Questions no label answers, correctly refused | **9 of 10** |
+| Answerable questions wrongly refused | 2 of 46 |
+| Answers that pass the automatic citation check | **36 of 39 (92%)** with the hosted model; 30 of 45 (67%) with the local one |
+| Citations that point to a source that does not exist | **0** |
+| Time per question | 60 ms to retrieve; about 1 s to answer (hosted) or about a minute (local, CPU only) |
+
+Every setting was chosen on a separate set of 83 development questions. The test questions were
+opened once, at the end, and nothing was tuned afterwards. The decisions are recorded in
+[ADR-016](docs/adr/ADR-016-no-vector-store-exact-search.md) (no vector store) and
+[ADR-017](docs/adr/ADR-017-hosted-generation-local-fallback.md) (a hosted model by default, a
+local one behind the same interface).
 
 ---
 
@@ -359,6 +391,7 @@ never redistributed here.
 | [`architecture.md`](architecture.md) | The diagram explained stage by stage, tool choices and what was rejected |
 | [`runbook.md`](runbook.md) | Start it, run it, verify it, recover it — and the failure playbook |
 | [`docs/adr/`](docs/adr/) | Architecture Decision Records — why, and what was rejected |
+| [`rag/README.md`](rag/README.md) | The retrieval extension: what was built and measured, phase by phase |
 | [`docs/business_requirements.md`](docs/business_requirements.md) | Business case, requirements, glossary |
 | [`docs/technical_requirements.md`](docs/technical_requirements.md) | TR-xx technical specification |
 | [`docs/Metadata/`](docs/Metadata/) | Field dictionary, source schemas, metadata catalogue |
