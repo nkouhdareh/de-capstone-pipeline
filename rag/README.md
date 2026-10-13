@@ -1,29 +1,99 @@
-# Retrieval extension (RAG) over openFDA drug labels
+# Ask the drug labels
 
-Answers natural-language questions about drug-label content and cites the source
-label section, or states that the question falls outside indexed scope.
+**A retrieval layer (RAG) over 86,367 openFDA drug labels.** It answers plain-language
+questions about label content, puts a citation after every sentence, and refuses when the
+labels do not hold the answer.
 
-Closes **BR-16**, **BR-17** and **TR-50 ... TR-57**, recorded as deliberately not
-built in [ADR-015](../docs/adr/ADR-015-retrieval-extension-not-built.md). Built afterwards, in
-September 2026; the status of each requirement is in `docs/technical_requirements.md` section 10.
+> Built after the Data Engineering capstone, in September 2026
+> Part of [Drug Safety Signal Detection](../README.md)
 
-## Status
+---
 
-| Phase | State |
-|---|---|
-| Scaffold | done |
-| 0 Explore the label corpus | **done** |
-| 1 Corpus scoping and chunking | **done** |
-| 2 Gold set and evaluation harness | **done** |
-| 3 Dense retrieval baseline | **done** |
-| 4 Hybrid retrieval, vector store decision (ADR-016) | **done** |
-| 5 Reranking, diversity, guardrail | **done** |
-| 6 Generation and Streamlit tab (ADR-017) | **done** |
-| 7 Test split scored once, ADRs and requirements written up | **done** |
+## The problem
+
+The pipeline this extends ranks 1,240,645 drug and reaction pairs and flags 315,270 worth a
+human look. It cannot say what the label already warns about. Deciding whether a signal is
+news means reading the label, and that is where the data stops being structured.
+
+A label is not a record you can query. 261,258 of them arrive as nested JSON; the answer to a
+question is one paragraph inside one section of one of them; and the same paragraph is copied
+across hundreds of labels from different manufacturers, so **59.4% of section text is an exact
+duplicate** of other section text. One `warnings` text appears on 6,390 labels.
+
+Keyword search alone misses the question phrased differently from the label. A language model
+alone invents a plausible warning and cites nothing. What an analyst needs is the paragraph
+itself, found reliably, quoted with its source, and an honest refusal when no label covers the
+question.
+
+## What this does
+
+Every label section is chunked to a size an embedding model can read, deduplicated, and
+indexed twice: once as vectors for meaning, once as BM25 for exact words. A question searches
+both, the two rankings are fused, near-copies are collapsed, and a guardrail refuses before any
+model is called when nothing in the index fits. A language model then writes the answer from
+the five retrieved passages, and code, not another model, checks that every sentence cites a
+source and that the words it adds appear in the source it cites.
 
 The dashboard's fifth tab, **Ask the labels**, puts it on screen (`app/rag_tab.py`), locally.
 
-## Results on the held-out test split
+It closes **BR-16**, **BR-17** and **TR-50 ... TR-57**, which
+[ADR-015](../docs/adr/ADR-015-retrieval-extension-not-built.md) recorded as deliberately not
+built under the capstone deadline. The status of each requirement is in
+`docs/technical_requirements.md` section 10.
+
+---
+
+## Architecture
+
+![Retrieval architecture: openFDA labels filtered, chunked, deduplicated and indexed twice offline; at query time a hybrid search fused by RRF, near-copy collapse, a refusal guardrail, an LLM, and a citation check](docs/assets/architecture.png)
+
+The top row runs once and leaves two index files on disk. The bottom row runs per question and
+touches nothing but those files and one model call. Neither row needs Snowflake, Airflow or
+Spark.
+
+Two steps in the bottom row exist so the system is allowed to say no. The **guardrail** refuses
+before any model is called, when the question uses a word no chunk contains or when the best
+match is too weak. The **citation check** runs after the model and is plain code: for each
+sentence it asks whether it cites, whether the number is a real source, and whether the words
+it adds are actually in the chunk it points at.
+
+### Tech stack
+
+| Layer | Tool | Why this one |
+|---|---|---|
+| Corpus | **openFDA drug labels**, Bronze JSONL | Already on disk from the pipeline's ingest. No new source and no new credentials. |
+| Chunking | **Hand-written**, 350 to 450 tokens | The corpus has two opposite problems: prescription sections overflow a 512-token window, OTC sections run about 40 tokens. One rule splits the first and merges the second. |
+| Embeddings | **`snowflake-arctic-embed-s`** via fastembed | Apache 2.0 and US-published, with the same 512-token window and tokenizer vocabulary as the model it replaced, so the Phase 1 chunks stayed valid. |
+| Keyword search | **BM25**, hand-rolled on numpy | Builds in 30 seconds against the dense index's 10.8 hours, and its two settings change without a rebuild. |
+| Fusion | **Reciprocal Rank Fusion**, k = 60 | BM25 and dense tie overall but fail on different questions, which is the condition for fusion to help. |
+| Vector store | **None**, exact search | Exact search takes 19 ms and is always right; faiss HNSW takes 0.4 ms and finds 0.939 of the exact top 20, for a saving nobody sees next to an LLM answer. ([ADR-016](../docs/adr/ADR-016-no-vector-store-exact-search.md)) |
+| Generation | **`gpt-oss-120b`** on Groq, **`llama3.2:3b`** on Ollama | Hosted answers by default; the local one keeps the project runnable with no account, no key and no network. ([ADR-017](../docs/adr/ADR-017-hosted-generation-local-fallback.md)) |
+| Serving | **Streamlit tab**, local only | The indexes are files on this machine, which Streamlit in Snowflake cannot reach. |
+| Evaluation | **Hand-written harness**, bootstrap intervals | Runs in 1.2 seconds, proves itself on two baselines that cannot be wrong and cannot be right, and reports intervals because at n=56 a 3 point difference is noise. |
+
+---
+
+## Setup
+
+A separate environment from `.venv`, `.venv-app` and `.venv-dbt` on purpose: the
+embedding stack added in Phase 3 conflicts with Airflow's pinned dependencies, the
+same collision that put dbt in its own container.
+
+    py -3.11 -m venv .venv-rag
+    source .venv-rag/Scripts/activate        # Git Bash on Windows
+    python -m pip install -r rag/requirements.txt
+
+Then run the dashboard and open the **Ask the labels** tab:
+
+    .venv-app/Scripts/python.exe -m pip install fastembed==0.8.1      # once
+    .venv-app/Scripts/streamlit.exe run app/dashboard_enhanced.py --server.port 8502 --theme.base=dark
+
+The hosted model needs `GROQ_API_KEY` in `.env` (see `.env.example`); the local one needs the
+Ollama app running with `llama3.2:3b`.
+
+---
+
+## Results
 
 Every setting above was chosen on the 83 dev questions. The 56 test questions (46 answerable,
 10 negatives) were set aside in Phase 2 and scored **once**, on 2026-09-30, after everything was
@@ -72,7 +142,81 @@ To reproduce (the retrieval and guardrail lines take seconds; the answers need a
     python -m rag.eval.answer_eval --split test --backend groq --out <answers.jsonl>
     python -m rag.eval.answer_eval --split test --out <answers.jsonl>
 
-## What Phase 0 measured
+The harness prints the scores, their intervals and its own verdict. It reports "no clear
+difference" on three of six metrics, including recall@5:
+
+![Evaluation harness output on the test split: recall@1 0.435 and recall@5 0.609 with 95% intervals, and a paired comparison against dense search reporting no clear difference on three of six metrics](docs/assets/eval_retrieval.png)
+
+The guardrail is judged the same way, and it names every question it refused and why:
+
+![Guardrail evaluation on the test split: cosine AUC 0.922, 9 of 10 negatives refused, 2 of 46 answerable questions wrongly refused, with the refused questions listed by reason](docs/assets/eval_guardrail.png)
+
+`d130` is the negative that got through: clofazimine, at cosine 0.748, just above the 0.72 cut.
+
+---
+
+## Ask the labels
+
+![The Ask the labels tab answering a question about pantoprazole and low magnesium, with a citation after every sentence, a passed citation check, and the five label sections the model was given](docs/assets/ask_answer.png)
+
+Every sentence carries a citation, the check that runs after the model is reported in the page,
+and all five sources the model was given are listed and can be opened to read the label text
+behind the answer.
+
+![The same tab refusing a question about gliclazide, with the message that no label in the index contains that word and that it was refused before any model was called](docs/assets/ask_refusal.png)
+
+Gliclazide has no US label here, so the guardrail refuses before a model is called. The page
+says which word was not found, so a user can tell a misspelling from a genuinely absent drug.
+
+---
+
+## What this is not
+
+**Label text, not medical advice.** A label can be out of date and the answer can be wrong.
+Every answer carries its sources so they can be read directly.
+
+**It answers from the labels, not about the world.** A question no indexed label covers is
+refused rather than guessed at.
+
+**It runs locally only.** The indexes are files on this machine, and Streamlit in Snowflake can
+reach neither them nor an outside model on a trial account.
+
+**Two thirds of the corpus is out of scope.**
+
+The remaining **174,891 labels (66.9%) are out of scope**, because openFDA could not
+harmonise them to the NDC directory and they carry no brand name, generic name or NDC. They
+are not unidentifiable, only unharmonised: 99.8% carry a product name in
+`spl_product_data_elements` and 63.6% carry an `active_ingredient` field. Between them they
+hold roughly 190 million characters of `warnings` text.
+
+They are excluded on **attribution**, not cost. A chunk that cannot be attached to a drug name
+cannot be filtered to or cited, and if it surfaces anyway it looks like an answer while being
+unusable. Recovering them means resolving free-text ingredient names, which is the
+[ADR-005](../docs/adr/ADR-005-drug-name-resolution-tiers.md) problem on a cleaner input.
+Deferred and sized, not dismissed.
+
+---
+
+## How it was built, phase by phase
+
+Each phase was measured before the next one started, and three of them changed the
+design.
+
+| Phase | State |
+|---|---|
+| Scaffold | done |
+| 0 Explore the label corpus | **done** |
+| 1 Corpus scoping and chunking | **done** |
+| 2 Gold set and evaluation harness | **done** |
+| 3 Dense retrieval baseline | **done** |
+| 4 Hybrid retrieval, vector store decision (ADR-016) | **done** |
+| 5 Reranking, diversity, guardrail | **done** |
+| 6 Generation and Streamlit tab (ADR-017) | **done** |
+| 7 Test split scored once, ADRs and requirements written up | **done** |
+
+The dashboard's fifth tab, **Ask the labels**, puts it on screen (`app/rag_tab.py`), locally.
+
+### What Phase 0 measured
 
 A full pass over all 261,258 Bronze label records (61 s), flattened to two narrow Parquet
 files so every question is a SQL query rather than a re-read of 8.5 GB. See
@@ -272,28 +416,7 @@ no key and no network ([ADR-017](../docs/adr/ADR-017-hosted-generation-local-fal
 - **The documentation was wrong once too.** The first-choice hosted model was listed by the
   provider and not available to a free account; the account's own model list decided.
 
-The tab runs locally only: the indexes are files on this machine, and Streamlit in Snowflake
-can reach neither them nor an outside model on a trial account.
-
-    .venv-app/Scripts/python.exe -m pip install fastembed==0.8.1      # once
-    .venv-app/Scripts/streamlit.exe run app/dashboard_enhanced.py --server.port 8502 --theme.base=dark
-
-The hosted model needs `GROQ_API_KEY` in `.env` (see `.env.example`); the local one needs the
-Ollama app running with `llama3.2:3b`.
-
-### Known limitation
-
-The remaining **174,891 labels (66.9%) are out of scope**, because openFDA could not
-harmonise them to the NDC directory and they carry no brand name, generic name or NDC. They
-are not unidentifiable, only unharmonised: 99.8% carry a product name in
-`spl_product_data_elements` and 63.6% carry an `active_ingredient` field. Between them they
-hold roughly 190 million characters of `warnings` text.
-
-They are excluded on **attribution**, not cost. A chunk that cannot be attached to a drug name
-cannot be filtered to or cited, and if it surfaces anyway it looks like an answer while being
-unusable. Recovering them means resolving free-text ingredient names, which is the
-[ADR-005](../docs/adr/ADR-005-drug-name-resolution-tiers.md) problem on a cleaner input.
-Deferred and sized, not dismissed.
+---
 
 ## Design decisions fixed up front
 
@@ -336,16 +459,6 @@ directly. It needs no Snowflake, no Airflow and no Spark.
 | `generate/` | LLM backends behind one interface |
 | `eval/` | Gold set and the evaluation harness |
 | `tests/` | Unit tests |
-
-## Setup
-
-A separate environment from `.venv`, `.venv-app` and `.venv-dbt` on purpose: the
-embedding stack added in Phase 3 conflicts with Airflow's pinned dependencies, the
-same collision that put dbt in its own container.
-
-    py -3.11 -m venv .venv-rag
-    source .venv-rag/Scripts/activate        # Git Bash on Windows
-    python -m pip install -r rag/requirements.txt
 
 ## Data
 
